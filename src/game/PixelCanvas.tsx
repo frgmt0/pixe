@@ -199,7 +199,13 @@ export function PixelCanvas({
     const c = cellAt(e);
     if (!c) return;
     e.preventDefault();
-    (e.target as Element).setPointerCapture?.(e.pointerId);
+    try {
+      // Throws for synthetic or already-released pointer ids; capture is an
+      // optimisation for drags that leave the element, never a requirement.
+      (e.target as Element).setPointerCapture?.(e.pointerId);
+    } catch {
+      /* drag still works via the wrapper's own pointermove */
+    }
     dragging.current = true;
     hoverRef.current = { x: c[0], y: c[1] };
     // Alt-click picks the colour under the cursor, the way every paint app works.
