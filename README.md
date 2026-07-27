@@ -161,8 +161,14 @@ seed, re-runs the identical shared validator, and computes the point value itsel
 forged grid, an incomplete grid, or a grid one cell off is rejected with 422. Re-solving a
 banked puzzle pays zero.
 
-Verified: solid-colour grid → 422, one empty cell → 422, one wrong cell → 422, genuine
-solution → 200, replay → 0 points.
+Verified against the deployed Worker, on both a ladder key and the daily key: solid-colour
+grid → 422, one empty cell → 422, one illegal cell → 422, genuine solution → 200, replay →
+0 points, and six concurrent submissions of the same solve → exactly one payment.
+
+"One wrong cell" means one cell the validator rejects, not merely one cell different from
+the reference solution. Boards have laws, not a single answer — of 43 sampled single-cell
+mutations of one daily target, 6 were still perfectly legal, and the server accepted them
+because they *are* solutions.
 
 **Known and accepted:** the client computes the laws locally from the seed in order to
 drive the live glow, so anyone reading devtools can extract them. That's inherent to
