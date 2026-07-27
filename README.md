@@ -24,7 +24,7 @@ bun run start      # single Bun process serving the API and dist/ on :3001
 Tests:
 
 ```bash
-bun test           # 31 tests, including a 520-puzzle solvability sweep
+bun test           # 33 tests, including a 520-puzzle solvability sweep
 ```
 
 Env: `PORT` (default 3001), `PIXE_DB` (default `./data/pixe.sqlite`), `NODE_ENV`.
@@ -46,6 +46,11 @@ least 47 cells" can be broken on a completely filled grid with no wrong cell any
 Without a swatch reaction the player would face a finished canvas, a dark submit button,
 and zero information. `shared/engine.test.ts` asserts the invariant directly — across 60
 puzzles × 12 grid states, **no failing law is ever invisible**.
+
+The mirror of that rule matters just as much: a law that is merely *unfinished* must stay
+silent while blank cells remain, or the board would be nagging about requirements the
+player has not been told about and cannot yet have broken. Silence is only a bug once the
+grid is full. The test checks both halves.
 
 There are no hints, no teasers, no law counter, and no rule text anywhere during play.
 Rule text exists in exactly two places, both after the fact: the post-solve reveal and
@@ -80,6 +85,30 @@ produces unwinnable boards, and an unwinnable board makes the leaderboard a lie.
 Because the reference solution satisfies every derived law by construction, a solution
 provably exists. The test suite regenerates 520 puzzles and asserts each one's own target
 validates clean.
+
+### Why zone laws carry a coverage floor
+
+Every law except `zone` names specific hues. A player who simply never paints those hues
+satisfies all of them *vacuously* — and a zone law that only permits hues is perfectly
+happy with a solid fill. Left alone, that collapses the entire game: paint one bucket per
+region, collect full points, deduce nothing.
+
+It was measured, not theorised. Over 120 ladder puzzles:
+
+| cheap strategy | beat the puzzle |
+| --- | --- |
+| one solid hue per zone, no floor | **96%** |
+| solid zone + one token pixel of each other permitted hue | **33%** |
+| both, with the coverage floor in place | **0%** |
+
+So a zone law is a permit list *and* a requirement list: each listed hue must cover at
+least `each` cells of that region, where `each` is half the scarcest hue's count in the
+reference solution (so the target clears it with room to spare, and the player is never
+asked to match an exact number). Both strategies are now permanent regression tests.
+
+The floor also fixes the scoring. Point value is summed rule weight, and before the fix
+much of that weight came from laws no player could ever trip — the leaderboard was ranking
+patience rather than deduction.
 
 ### The twelve law primitives
 

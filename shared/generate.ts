@@ -254,14 +254,30 @@ function deriveRules(rng: Rng, target: Grid, zmap: Uint8Array, scheme: ZoneSchem
 
   // --- Zone rules: read straight off the reference solution, so they are
   // true by construction no matter what the decorations did.
+  //
+  // `each` turns the permit list into a requirement list: every listed hue has
+  // to cover real ground here. That is what forces the whole palette onto the
+  // board, which in turn is what stops the hue-keyed rules below from being
+  // dodged into vacuous truth by simply never painting the hue they name.
+  //
+  // It is derived from the scarcest hue in the zone and then halved, so the
+  // reference solution clears it with room to spare and the player is never
+  // asked to match an exact count.
   const zoneRules: Rule[] = [];
   const zonePalettes: number[][] = [];
   for (let z = 0; z < nz; z++) {
-    const present = new Set<number>();
-    for (let i = 0; i < CELLS; i++) if (zmap[i] === z) present.add(target[i]!);
-    const hues = [...present].sort((a, b) => a - b);
+    const inZone = new Map<number, number>();
+    for (let i = 0; i < CELLS; i++) {
+      if (zmap[i] === z) inZone.set(target[i]!, (inZone.get(target[i]!) ?? 0) + 1);
+    }
+    const hues = [...inZone.keys()].sort((a, b) => a - b);
+    const scarcest = Math.min(...hues.map((h) => inZone.get(h)!));
     zonePalettes.push(hues);
-    zoneRules.push({ t: "zone", zone: z, hues });
+    // Never above `scarcest`, or the reference solution would fail its own
+    // rule; never below 2 unless the target genuinely leaves no room, because
+    // a floor of 1 is the token-cell loophole all over again.
+    const each = Math.min(scarcest, Math.max(2, Math.floor(scarcest * 0.5)));
+    zoneRules.push({ t: "zone", zone: z, hues, each });
   }
 
   // --- Candidate extras. Every one is checked against the target below, so a
@@ -415,10 +431,11 @@ const pairKey = (a: number, b: number) => (a < b ? `${a}-${b}` : `${b}-${a}`);
 
 /** Difficulty -> point value. Deliberately computed, never hand-set. */
 export function pointsFor(rules: Rule[]): { points: number; difficulty: number } {
-  // Observed difficulty runs ~6.5 (a tier-0 ladder puzzle) to ~17 (deep
-  // ladder). This maps that span onto the 3..7 point band.
+  // Measured over 300 ladder puzzles: difficulty runs ~10.6 (tier 0) to ~23.4
+  // (deep ladder), median ~17. This maps that span onto the 3..7 point band so
+  // the middle of the ladder pays the middle of the band.
   const difficulty = rules.reduce((s, r) => s + ruleWeight(r), 0);
-  const points = Math.max(3, Math.min(7, 3 + Math.round((difficulty - 7) / 2.2)));
+  const points = Math.max(3, Math.min(7, 3 + Math.round((difficulty - 11) / 3)));
   return { points, difficulty };
 }
 

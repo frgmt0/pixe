@@ -76,7 +76,11 @@ export function SolvedDialog({ result, puzzle, grid, onClose, onBack }: Props) {
             />
             <div className="min-w-45 flex-1">
               <div className="mb-3 flex flex-wrap gap-2">
-                <Badge variant="ink">+{result.points} pts</Badge>
+                {/* A replay pays nothing, and "+0 pts" reads like a bug rather
+                    than a rule. Say what actually happened instead. */}
+                <Badge variant="ink">
+                  {result.alreadySolved ? "already banked" : `+${result.points} pts`}
+                </Badge>
                 <Badge variant="plain">{result.stats.score} total</Badge>
                 <Badge variant="plain">{result.stats.solved} solved</Badge>
                 {puzzle.bonds.length > 0 && (

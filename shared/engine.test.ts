@@ -94,6 +94,85 @@ describe("puzzle shape", () => {
     }
   });
 
+  /**
+   * The one that nearly shipped broken.
+   *
+   * Every primitive except `zone` names specific hues, so a player who simply
+   * never paints those hues satisfies all of them vacuously. A zone rule that
+   * only permits hues is then happy with a solid fill, and the entire puzzle
+   * reduces to one bucket click per region — worth full points, for no
+   * deduction at all. It measured 96% of the ladder.
+   *
+   * The `each` coverage floor is what closes it. These two probes are the
+   * cheap-strategy ladder: fill each zone solid, then fill it solid and poke
+   * in one token cell of every other permitted hue. Both must fail everywhere.
+   */
+  describe("cheap strategies do not beat puzzles", () => {
+    const solidPerZone = function* (palettes: number[][]): Generator<number[]> {
+      const idx = new Array(palettes.length).fill(0);
+      for (;;) {
+        yield idx.map((v, i) => palettes[i]![v]!);
+        let k = palettes.length - 1;
+        while (k >= 0 && ++idx[k]! >= palettes[k]!.length) { idx[k] = 0; k--; }
+        if (k < 0) return;
+      }
+    };
+
+    const zoneInfo = (key: string) => {
+      const { puzzle } = generate(key);
+      const zmap = zoneMap(puzzle.scheme);
+      const palettes = puzzle.rules
+        .filter((r): r is Extract<Rule, { t: "zone" }> => r.t === "zone")
+        .sort((a, b) => a.zone - b.zone)
+        .map((r) => r.hues);
+      return { zmap, palettes };
+    };
+
+    test("no puzzle falls to one solid hue per zone", () => {
+      for (const key of LADDER.slice(0, 120)) {
+        const { zmap, palettes } = zoneInfo(key);
+        for (const combo of solidPerZone(palettes)) {
+          const g = new Int8Array(CELLS);
+          for (let i = 0; i < CELLS; i++) g[i] = combo[zmap[i]!]!;
+          if (assess(key, g).solved) {
+            throw new Error(`${key} solved by solid zone fill [${combo}]`);
+          }
+        }
+      }
+    });
+
+    test("no puzzle falls to a solid zone plus token cells of the other hues", () => {
+      for (const key of LADDER.slice(0, 120)) {
+        const { zmap, palettes } = zoneInfo(key);
+        const cells: number[][] = palettes.map(() => []);
+        for (let i = 0; i < CELLS; i++) cells[zmap[i]!]!.push(i);
+
+        for (let base = 0; base < 4; base++) {
+          for (let off = 0; off < 6; off++) {
+            const g = new Int8Array(CELLS);
+            for (let i = 0; i < CELLS; i++) {
+              const pal = palettes[zmap[i]!]!;
+              g[i] = pal[base % pal.length]!;
+            }
+            for (let z = 0; z < palettes.length; z++) {
+              const pal = palettes[z]!;
+              const list = cells[z]!;
+              let slot = off;
+              for (const h of pal) {
+                if (h === pal[base % pal.length]) continue;
+                g[list[(slot * 137 + off * 29) % list.length]!] = h;
+                slot += 7;
+              }
+            }
+            if (assess(key, g).solved) {
+              throw new Error(`${key} solved by token-diversity fill (base ${base}, off ${off})`);
+            }
+          }
+        }
+      }
+    });
+  });
+
   test("every rule renders to non-empty text", () => {
     for (const key of ALL_KEYS.slice(0, 80)) {
       const { puzzle } = generate(key);
@@ -145,6 +224,15 @@ describe("assessment", () => {
    * The game never states its rules, so every failure must be visible as
    * either glowing cells or a reacting swatch. A broken rule that shows
    * neither is an unwinnable dead end on a fully painted grid.
+   *
+   * Two distinct obligations, and the difference matters:
+   *
+   *   `broken`  — always visible. Something is wrong right now.
+   *   `pending` — may be silent, but only while blank cells remain. A rule
+   *               that is merely unfinished must NOT glow, or the board would
+   *               be nagging about requirements the player hasn't been told
+   *               about and cannot yet have broken. On a full grid there is no
+   *               "yet", so silence there would be a dead end.
    */
   test("no failure is ever silent, on any grid state", () => {
     for (const key of LADDER.slice(0, 60)) {
@@ -167,9 +255,16 @@ describe("assessment", () => {
 
       for (const g of probes) {
         const ctx = makeCtx(g, zmap);
+        const full = !g.includes(EMPTY);
         for (const rule of puzzle.rules) {
           const ev = evaluateRule(rule, g, ctx);
           if (ev.status === "ok") continue;
+          if (ev.status === "pending") {
+            // Reachable-but-unmet is only a legitimate silence while there is
+            // still somewhere to put the missing paint.
+            expect(full).toBe(false);
+            continue;
+          }
           const visible = ev.violations.length > 0 || ev.hue !== null;
           if (!visible) {
             throw new Error(

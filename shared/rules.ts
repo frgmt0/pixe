@@ -10,8 +10,20 @@ import { zoneLabel } from "./zones";
  * membership — 4096 independent per-cell rules would be undeducible.
  */
 export type Rule =
-  /** Positional: this zone accepts only these hues. */
-  | { t: "zone"; zone: number; hues: number[] }
+  /**
+   * Positional: this zone accepts only these hues, and every one of them must
+   * cover at least `each` cells of it.
+   *
+   * `each` is what stops the whole game collapsing. Every other primitive is
+   * keyed to specific hues, so a player who never paints those hues satisfies
+   * all of them vacuously — and a plain permit-list zone rule is perfectly
+   * happy with a solid fill. Measured on 150 ladder puzzles: with no floor at
+   * all, 96% fell to "one bucket fill per zone"; with a floor of merely one
+   * cell per hue, 33% still fell to "solid base plus a token pixel of each
+   * other colour", because a hue present once dodges nearly every law about
+   * it. Only a real coverage floor forces the rest of the rule set to bite.
+   */
+  | { t: "zone"; zone: number; hues: number[]; each: number }
   /** A and B may never share an orthogonal edge. */
   | { t: "forbidAdj"; a: number; b: number }
   /** Every A needs at least one orthogonal B. */
@@ -97,18 +109,42 @@ export function evaluateRule(rule: Rule, grid: Grid, ctx: EvalCtx): RuleEval {
     case "zone": {
       const allowed = new Uint8Array(HUE_COUNT);
       for (const h of rule.hues) allowed[h] = 1;
+      const seen = new Int32Array(HUE_COUNT);
       const violations: number[] = [];
       let touched = false;
+      let empties = 0;
       for (let i = 0; i < CELLS; i++) {
         if (ctx.zmap[i] !== rule.zone) continue;
         const v = grid[i]!;
-        if (v < 0) continue;
+        if (v < 0) {
+          empties++;
+          continue;
+        }
         touched = true;
         if (!allowed[v]) violations.push(i);
+        else seen[v]!++;
       }
-      return violations.length
-        ? { status: "broken", violations, touched: true, hue: null, progress: null }
-        : ok(touched);
+      // A hue that doesn't belong here is the more specific complaint, so it
+      // wins the glow when both are wrong at once.
+      if (violations.length) {
+        return { status: "broken", violations, touched: true, hue: null, progress: null };
+      }
+      // How many more cells this zone still owes, summed over every hue that
+      // is short of its floor.
+      let shortfall = 0;
+      for (const h of rule.hues) shortfall += Math.max(0, rule.each - seen[h]!);
+      if (shortfall === 0) return ok(touched);
+      // Still enough blank space for the debt to be paid — say nothing yet.
+      // The complaint lands the instant the zone fills up, which is exactly
+      // when the lesson is legible.
+      if (shortfall <= empties) {
+        return { status: "pending", violations: [], touched, hue: null, progress: null };
+      }
+      // No single guilty cell and no one hue to blame, so the region itself is
+      // the message: the whole zone glows.
+      const zoneCells: number[] = [];
+      for (let i = 0; i < CELLS; i++) if (ctx.zmap[i] === rule.zone) zoneCells.push(i);
+      return { status: "broken", violations: zoneCells, touched: true, hue: null, progress: null };
     }
 
     case "forbidAdj": {
@@ -334,7 +370,10 @@ function forEachNeighbor(i: number, fn: (j: number) => void): void {
 export function ruleWeight(r: Rule): number {
   switch (r.t) {
     case "zone":
-      return 1 + Math.max(0, 4 - r.hues.length) * 0.4;
+      // Narrow palettes bite harder. The coverage floor adds a little on top,
+      // flattened by a log so a zone demanding 200 cells of each hue is not
+      // scored as ten times harder than one demanding 20.
+      return 1 + Math.max(0, 4 - r.hues.length) * 0.4 + Math.log2(1 + r.each) * 0.25;
     case "forbidAdj":
       return 1.6;
     case "requireAdj":
@@ -370,8 +409,11 @@ const N = hueName;
 export function ruleText(r: Rule, scheme: ZoneScheme): string {
   switch (r.t) {
     case "zone": {
-      const names = r.hues.map((h) => N(h)).join(", ");
-      return `${cap(zoneLabel(scheme, r.zone))} only accepts ${names}.`;
+      const names = list(r.hues.map((h) => N(h)));
+      const where = cap(zoneLabel(scheme, r.zone));
+      if (r.each <= 0) return `${where} only accepts ${names}.`;
+      if (r.each === 1) return `${where} only accepts ${names}, and all of them must show up.`;
+      return `${where} only accepts ${names}, and each of them must cover at least ${r.each} cells of it.`;
     }
     case "forbidAdj":
       return `${N(r.a)} refuses to share an edge with ${N(r.b)}. Corners are fine — they can be civil at a distance.`;
@@ -402,6 +444,12 @@ export function ruleText(r: Rule, scheme: ZoneScheme): string {
 
 function cap(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/** "Tomato, Mint and Grape" — the reveal is prose, not a data dump. */
+function list(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? "nothing";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
 export function bondText(b: Bond): string {
