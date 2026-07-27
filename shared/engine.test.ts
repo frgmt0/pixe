@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { decodeGrid, encodeGrid } from "./codec";
 import { dailyKey, generate, isValidKey, ladderKey, pointsFor } from "./generate";
 import { CELLS, EMPTY, GRID, HUE_COUNT } from "./palette";
@@ -11,6 +11,17 @@ const DAILIES = Array.from({ length: 120 }, (_, i) =>
   dailyKey(new Date(Date.UTC(2026, 0, 1 + i * 3))),
 );
 const ALL_KEYS = [...LADDER, ...DAILIES];
+
+/**
+ * Generating a puzzle costs ~11ms, because every board is adversarially
+ * hardened against no-thought fills before it is accepted. `generate` memoises,
+ * so paying for the whole corpus once here keeps that cost out of the
+ * individual tests — otherwise the first test in each block pays it again and
+ * trips the default timeout, which looks like a failure but is only a warm-up.
+ */
+beforeAll(() => {
+  for (const key of ALL_KEYS) generate(key);
+}, 60_000);
 
 describe("solvability", () => {
   test("every generated puzzle's reference solution validates clean", () => {
@@ -136,6 +147,46 @@ describe("puzzle shape", () => {
           for (let i = 0; i < CELLS; i++) g[i] = combo[zmap[i]!]!;
           if (assess(key, g).solved) {
             throw new Error(`${key} solved by solid zone fill [${combo}]`);
+          }
+        }
+      }
+    });
+
+    /**
+     * The strategy after solid fills, and a sneakier one: a mechanical pattern
+     * clears the coverage floor by construction and is accidentally good at
+     * constraint satisfaction — a checkerboard alone gives you `lonely`,
+     * `noBlock`, `parity` and `requireAdj`. This measured 21% of the ladder
+     * before the generator started adversarially hardening against it.
+     *
+     * Deliberately re-implemented here rather than reusing the generator's own
+     * decoy set, and routed through `assess` — the same entry point the server
+     * validates with. Sharing that code would make the test tautological: the
+     * generator would be graded by exactly the check it optimises against, and
+     * any drift between it and real validation would go unseen.
+     */
+    test("no puzzle falls to a mechanical pattern fill", () => {
+      const patterns: ((x: number, y: number) => number)[] = [
+        (x, y) => x + y,
+        (x, y) => y,
+        (x, y) => x,
+        (x, y) => (x >> 1) + (y >> 1),
+        (x, y) => (x + y) >> 2,
+        (x, y) => y >> 2,
+        (x, y) => x >> 2,
+      ];
+      for (const key of LADDER.slice(0, 120)) {
+        const { zmap, palettes } = zoneInfo(key);
+        for (const pat of patterns) {
+          for (let rot = 0; rot < 4; rot++) {
+            const g = new Int8Array(CELLS);
+            for (let i = 0; i < CELLS; i++) {
+              const pal = palettes[zmap[i]!]!;
+              g[i] = pal[(pat(i % GRID, (i / GRID) | 0) + rot) % pal.length]!;
+            }
+            if (assess(key, g).solved) {
+              throw new Error(`${key} solved by a mechanical pattern fill (rot ${rot})`);
+            }
           }
         }
       }

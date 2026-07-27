@@ -24,7 +24,7 @@ bun run start      # single Bun process serving the API and dist/ on :3001
 Tests:
 
 ```bash
-bun test           # 33 tests, including a 520-puzzle solvability sweep
+bun test           # 34 tests, including a 520-puzzle solvability sweep
 ```
 
 Env: `PORT` (default 3001), `PIXE_DB` (default `./data/pixe.sqlite`), `NODE_ENV`.
@@ -79,7 +79,9 @@ produces unwinnable boards, and an unwinnable board makes the leaderboard a lie.
    keeping only those that actually hold.
 6. Select a type-diverse subset, at most one law per hue or hue pair — otherwise you get
    both `forbidAdj(A,B)` and `farApart(A,B)`, where the second strictly implies the first.
-7. Point value is **computed** from summed rule weights and mapped onto a 3–7 band. Never
+7. Adversarially verify the result against a family of no-thought fills, adding laws (or
+   redrawing the board) until none of them validate. See below.
+8. Point value is **computed** from summed rule weights and mapped onto a 3–7 band. Never
    hand-set.
 
 Because the reference solution satisfies every derived law by construction, a solution
@@ -93,22 +95,39 @@ satisfies all of them *vacuously* — and a zone law that only permits hues is p
 happy with a solid fill. Left alone, that collapses the entire game: paint one bucket per
 region, collect full points, deduce nothing.
 
-It was measured, not theorised. Over 120 ladder puzzles:
-
-| cheap strategy | beat the puzzle |
-| --- | --- |
-| one solid hue per zone, no floor | **96%** |
-| solid zone + one token pixel of each other permitted hue | **33%** |
-| both, with the coverage floor in place | **0%** |
-
 So a zone law is a permit list *and* a requirement list: each listed hue must cover at
 least `each` cells of that region, where `each` is half the scarcest hue's count in the
 reference solution (so the target clears it with room to spare, and the player is never
-asked to match an exact number). Both strategies are now permanent regression tests.
+asked to match an exact number).
 
-The floor also fixes the scoring. Point value is summed rule weight, and before the fix
-much of that weight came from laws no player could ever trip — the leaderboard was ranking
-patience rather than deduction.
+That kills solid fills, but not the next idea: a **mechanical pattern**. Stripes and
+checkerboards clear the coverage floor by construction and are accidentally good at
+constraint satisfaction — a checkerboard alone satisfies `lonely`, `noBlock`, `parity`
+*and* `requireAdj`. With only 2–5 non-zone laws per board, plenty of rule sets turn out to
+be pattern-compatible by chance.
+
+So generation ends with an **adversarial pass**. Every puzzle is tested against a family of
+no-thought fills, and any that still validates gets a law added specifically to break it,
+chosen greedily for how many decoys it kills. If the candidate pool runs dry — no law that
+is true of the reference solution can tell the pattern apart from a real answer — the board
+is discarded and redrawn. That last case is rare, and the retry counter feeds the seed, so
+it all stays deterministic.
+
+Measured over 120–150 ladder puzzles at each stage:
+
+| cheap strategy | before | after |
+| --- | --- | --- |
+| one solid hue per zone | **96%** | 0% |
+| solid zone + one token pixel of each other permitted hue | **33%** | 0% |
+| mechanical pattern fill (7 patterns × 4 rotations) | **21%** | 0% |
+
+All three are permanent regression tests, re-implemented independently of the generator's
+own decoy set and routed through `assess` — sharing that code would grade the generator by
+the very check it optimises against.
+
+This also fixes the scoring. Point value is summed rule weight, and before the fix much of
+that weight came from laws no player could ever trip: the leaderboard was ranking patience
+rather than deduction.
 
 ### The twelve law primitives
 

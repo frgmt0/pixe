@@ -246,7 +246,13 @@ function holds(rule: Rule, target: Grid, zmap: Uint8Array): boolean {
   return evaluateRule(rule, target, ctx).status === "ok";
 }
 
-function deriveRules(rng: Rng, target: Grid, zmap: Uint8Array, scheme: ZoneScheme, tier: number): Rule[] {
+function deriveRules(
+  rng: Rng,
+  target: Grid,
+  zmap: Uint8Array,
+  scheme: ZoneScheme,
+  tier: number,
+): { rules: Rule[]; resists: boolean } {
   const nz = zoneCount(scheme);
   const counts = new Int32Array(HUE_COUNT);
   for (let i = 0; i < CELLS; i++) counts[target[i]!]!++;
@@ -289,10 +295,12 @@ function deriveRules(rng: Rng, target: Grid, zmap: Uint8Array, scheme: ZoneSchem
   }
 
   for (const [a, b] of pairs) {
-    // Skip pairs that would collapse a zone to a single colour — technically
-    // solvable, but it reads as a broken puzzle rather than a clever one.
-    const collapses = zonePalettes.some((p) => p.length === 2 && p.includes(a) && p.includes(b));
-    if (collapses) continue;
+    // A two-hue zone whose pair may not touch used to be skipped as
+    // "collapsing", but the coverage floor now forces both hues to hold real
+    // ground, so the zone resolves to an interleaved pattern rather than a
+    // single colour. Keeping these matters: pair rules are the main thing that
+    // rejects a mechanical fill, and two-hue zones are precisely the puzzles
+    // that were still falling to one.
     candidates.push({ t: "forbidAdj", a, b });
     candidates.push({ t: "farApart", a, b });
     candidates.push({ t: "requireAdj", a, b });
@@ -363,7 +371,118 @@ function deriveRules(rng: Rng, target: Grid, zmap: Uint8Array, scheme: ZoneSchem
     take(r);
   }
 
-  return [...zoneRules, ...extras];
+  const resists = harden(rng, zoneRules, extras, valid, takenTopics, zmap, zonePalettes);
+  return { rules: [...zoneRules, ...extras], resists };
+}
+
+/** True when `b` adds nothing on top of `a`, because `a` already implies it. */
+function redundant(a: Rule, b: Rule): boolean {
+  if (a.t === "farApart" && b.t === "forbidAdj") {
+    return (a.a === b.a && a.b === b.b) || (a.a === b.b && a.b === b.a);
+  }
+  // A hue confined to one checkerboard parity can never touch itself, which
+  // already gives you `lonely`, and `lonely` already gives you `noBlock`.
+  if (a.t === "parity" && (b.t === "lonely" || b.t === "noBlock")) return a.a === b.a;
+  if (a.t === "lonely" && b.t === "noBlock") return a.a === b.a;
+  return false;
+}
+
+/**
+ * Adversarial pass: a puzzle must not fall to a strategy that involves no
+ * deduction at all.
+ *
+ * The zone coverage floor killed solid fills, but the next thing anyone tries
+ * is a mechanical pattern, and those are alarmingly good at constraint
+ * satisfaction by accident — a checkerboard satisfies `lonely`, `noBlock`,
+ * `parity` and `requireAdj` simultaneously; stripes satisfy `buddy`,
+ * `requireAdj` and `noBlock`. With only 2-5 extra laws, the odds that a whole
+ * rule set happens to be pattern-compatible are not small: measured at 21% of
+ * the ladder before this pass existed.
+ *
+ * So rather than guess which laws are pattern-hostile, we check. Every cheap
+ * grid that still validates gets a law added specifically to break it. This
+ * generalises — a newly discovered cheap strategy only has to be added to
+ * `cheapFills` and every puzzle hardens against it automatically.
+ */
+function harden(
+  rng: Rng,
+  zoneRules: Rule[],
+  extras: Rule[],
+  valid: Rule[],
+  takenTopics: Set<string>,
+  zmap: Uint8Array,
+  palettes: number[][],
+): boolean {
+  const decoys = cheapFills(zmap, palettes).map((g) => ({ g, ctx: makeCtx(g, zmap) }));
+  const live = [...zoneRules, ...extras];
+
+  // Bounded so a pathological puzzle cannot spin, and so the rule list stays
+  // short enough to read in the post-solve reveal.
+  for (let round = 0; round < 8; round++) {
+    const survivors = decoys.filter(({ g, ctx }) =>
+      live.every((r) => evaluateRule(r, g, ctx).status === "ok"),
+    );
+    if (!survivors.length) return true;
+
+    // Topic uniqueness is an aesthetic preference — two laws about one hue read
+    // as padding. Resisting a no-thought solution is not aesthetic, so it wins
+    // the tie: here a taken topic is allowed, and only genuine redundancy
+    // (a law another law already implies) is filtered out.
+    const pool = rng.shuffle(
+      valid.filter((r) => !takenTopics.has(ruleTopic(r)) || live.every((e) => !redundant(e, r))),
+    );
+    let best: Rule | null = null;
+    let bestKills = 0;
+    for (const r of pool) {
+      let kills = 0;
+      for (const { g, ctx } of survivors) {
+        if (evaluateRule(r, g, ctx).status !== "ok") kills++;
+      }
+      if (kills > bestKills) {
+        best = r;
+        bestKills = kills;
+        // Nothing beats killing every survivor, so stop looking.
+        if (kills === survivors.length) break;
+      }
+    }
+    if (!best) return false; // Nothing left in the pool can help.
+    takenTopics.add(ruleTopic(best));
+    extras.push(best);
+    live.push(best);
+  }
+  // Ran out of rounds with decoys still standing.
+  return false;
+}
+
+/**
+ * The cheap-strategy family: fills that need no understanding of the puzzle.
+ * Each zone gets its own permitted palette cycled through a mechanical
+ * pattern, which clears the zone laws and the coverage floor by construction —
+ * so whatever rejects these has to be a real constraint.
+ */
+function cheapFills(zmap: Uint8Array, palettes: number[][]): Grid[] {
+  const patterns: ((x: number, y: number) => number)[] = [
+    () => 0, // solid
+    (x, y) => x + y, // checkerboard
+    (x, y) => y, // horizontal stripes
+    (x, y) => x, // vertical stripes
+    (x, y) => (x >> 1) + (y >> 1), // 2x2 blocks
+    (x, y) => (x + y) >> 2, // diagonal bands
+    (x, y) => y >> 2, // thick horizontal bands
+    (x, y) => x >> 2, // thick vertical bands
+  ];
+  const out: Grid[] = [];
+  for (const pat of patterns) {
+    for (let rot = 0; rot < 4; rot++) {
+      const g = new Int8Array(CELLS);
+      for (let i = 0; i < CELLS; i++) {
+        const pal = palettes[zmap[i]!]!;
+        g[i] = pal[(pat(i % GRID, (i / GRID) | 0) + rot) % pal.length]!;
+      }
+      out.push(g);
+    }
+  }
+  return out;
 }
 
 /**
@@ -471,11 +590,29 @@ export function generate(key: string): { puzzle: Puzzle; target: Grid } {
 
   const seed = `pixe-v1:${key}`;
   const tier = tierFor(key);
-  const rng = new Rng(hashString(seed));
 
-  const scheme = pickScheme(rng, tier);
-  const { target, zmap } = buildTarget(rng, scheme, tier);
-  const rules = deriveRules(rng, target, zmap, scheme, tier);
+  // `harden` fixes almost every puzzle that a mechanical fill would otherwise
+  // beat, but it can only add laws that are actually true of the reference
+  // solution — and occasionally that pool runs dry. Such a board is simply a
+  // weak one: no available law can tell a thoughtless pattern apart from a
+  // real answer. Rather than ship it, redraw and try again. Deterministic,
+  // because the retry counter feeds the seed.
+  let scheme!: ZoneScheme;
+  let target!: Grid;
+  let zmap!: Uint8Array;
+  let rules!: Rule[];
+  let rng!: Rng;
+  for (let attempt = 0; ; attempt++) {
+    rng = new Rng(hashString(attempt === 0 ? seed : `${seed}#${attempt}`));
+    scheme = pickScheme(rng, tier);
+    ({ target, zmap } = buildTarget(rng, scheme, tier));
+    const derived = deriveRules(rng, target, zmap, scheme, tier);
+    rules = derived.rules;
+    // 8 redraws is far more than anything observed; the bound only exists so a
+    // hypothetical pathological seed cannot hang the client.
+    if (derived.resists || attempt >= 8) break;
+  }
+
   const bonds = pickBonds(rng, target, rules);
   const { points, difficulty } = pointsFor(rules);
 
@@ -495,7 +632,11 @@ export function generate(key: string): { puzzle: Puzzle; target: Grid } {
   };
 
   const out = { puzzle, target };
-  if (cache.size > 256) cache.clear();
+  // Generation costs ~17ms now that every puzzle is adversarially hardened, so
+  // the cache has to comfortably outlive a working set rather than thrash
+  // against it. Each entry is a 4KB grid plus a small object, so this caps out
+  // around 5MB — bounded, and it keeps repeat lookups free.
+  if (cache.size > 1024) cache.clear();
   cache.set(key, out);
   return out;
 }

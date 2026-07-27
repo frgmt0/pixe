@@ -130,9 +130,13 @@ export function evaluateRule(rule: Rule, grid: Grid, ctx: EvalCtx): RuleEval {
         return { status: "broken", violations, touched: true, hue: null, progress: null };
       }
       // How many more cells this zone still owes, summed over every hue that
-      // is short of its floor.
+      // is short of its floor. The scarcest listed hue is the one to point at.
       let shortfall = 0;
-      for (const h of rule.hues) shortfall += Math.max(0, rule.each - seen[h]!);
+      let worst = -1;
+      for (const h of rule.hues) {
+        shortfall += Math.max(0, rule.each - seen[h]!);
+        if (worst < 0 || seen[h]! < seen[worst]!) worst = h;
+      }
       if (shortfall === 0) return ok(touched);
       // Still enough blank space for the debt to be paid — say nothing yet.
       // The complaint lands the instant the zone fills up, which is exactly
@@ -140,11 +144,24 @@ export function evaluateRule(rule: Rule, grid: Grid, ctx: EvalCtx): RuleEval {
       if (shortfall <= empties) {
         return { status: "pending", violations: [], touched, hue: null, progress: null };
       }
-      // No single guilty cell and no one hue to blame, so the region itself is
-      // the message: the whole zone glows.
+      // No single guilty cell, so the region itself is the message and the
+      // whole zone glows. It also names the scarcest hue through the swatch,
+      // with `progress` so the buzz eases off as that colour gains ground.
+      //
+      // Without the gradient this is a cliff: a player adding 50, then 100,
+      // then 150 cells of the missing colour would see no change at all until
+      // the threshold snapped, and "adding paint changes nothing" is exactly
+      // the signal that says stop pulling this lever. A rule you cannot get
+      // warmer or colder on is not learnable by exploration.
       const zoneCells: number[] = [];
       for (let i = 0; i < CELLS; i++) if (ctx.zmap[i] === rule.zone) zoneCells.push(i);
-      return { status: "broken", violations: zoneCells, touched: true, hue: null, progress: null };
+      return {
+        status: "broken",
+        violations: zoneCells,
+        touched: true,
+        hue: worst,
+        progress: { have: seen[worst]!, need: rule.each, dir: "atLeast" },
+      };
     }
 
     case "forbidAdj": {
