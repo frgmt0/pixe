@@ -1,0 +1,49 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pixe",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-07-01",
+  // Lets Workers use the Node built-ins the bundler pulls in transitively, and
+  // is required for `nodejs_compat`-flavoured polyfills used by dependencies.
+  "compatibility_flags": ["nodejs_compat"],
+
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    // The client is a single-page app: /play/L7 and /a/<id> are routes React
+    // resolves, not files on disk, so unknown paths must return index.html
+    // rather than a 404.
+    "not_found_handling": "single-page-application",
+    // Without this, asset serving answers *everything* — including /api/* —
+    // because single-page-application handling never falls through to the
+    // Worker. Naming the API prefix here is what keeps the routes reachable,
+    // while static files still come straight off the edge with no Worker
+    // invocation at all.
+    "run_worker_first": ["/api/*"]
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "pixe-db",
+      "database_id": "341a94dc-3f67-45f5-a291-5c0bf32938a2"
+    }
+  ],
+
+  // Sessions expire and throttle records go stale; a Worker has no process to
+  // hold a timer, so the sweep runs hourly on a trigger instead.
+  "triggers": {
+    "crons": ["0 * * * *"]
+  },
+
+  "routes": [
+    {
+      "pattern": "pixe.frgmt.xyz",
+      "custom_domain": true
+    }
+  ],
+
+  "observability": {
+    "enabled": true
+  }
+}

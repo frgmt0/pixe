@@ -9,7 +9,9 @@
     "dev:api": "bun --hot server/index.ts",
     "build": "tsc -b --noEmit && vite build",
     "start": "NODE_ENV=production bun server/index.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "db:schema": "bun run scripts/emit-schema.ts",
+    "deploy": "bun run build && bunx wrangler deploy"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.23",
@@ -31,6 +33,7 @@
     "@vitejs/plugin-react": "^6.0.4",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
-    "vite": "^8.1.5"
+    "vite": "^8.1.5",
+    "wrangler": "^4.114.0"
   }
 }
