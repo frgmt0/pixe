@@ -1,0 +1,200 @@
+@import "tailwindcss";
+
+/*
+  Toybox neo-brutalism: paper background, fat ink borders, hard offset shadows.
+  Goofy enough to be fun, flat enough to stay out of the way of the artwork —
+  the only saturated colour on screen should be the player's own grid.
+*/
+
+@theme {
+  --color-paper: #fff6e9;
+  --color-paper-2: #ffeed8;
+  --color-ink: #17141f;
+  --color-ink-soft: #4a4358;
+  --color-ink-faint: #8b8397;
+  --color-cloth: #262033;
+
+  --color-pop: #ffce2b;
+  --color-pop-2: #ff5fc0;
+  --color-good: #2fbf6b;
+  --color-bad: #ff3b3b;
+
+  --font-display: "Fredoka", ui-rounded, "Segoe UI Rounded", system-ui, sans-serif;
+  --font-sans: "Nunito", ui-sans-serif, system-ui, sans-serif;
+
+  --shadow-chunk: 4px 4px 0 0 var(--color-ink);
+  --shadow-chunk-sm: 2px 2px 0 0 var(--color-ink);
+  --shadow-chunk-lg: 7px 7px 0 0 var(--color-ink);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-ink);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    background-color: var(--color-paper);
+    /* Faint dot grid — a nod to the pixel canvas without competing with it. */
+    background-image: radial-gradient(circle at 1px 1px, rgba(23, 20, 31, 0.07) 1px, transparent 0);
+    background-size: 22px 22px;
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-weight: 600;
+    -webkit-font-smoothing: antialiased;
+    overscroll-behavior: none;
+  }
+
+  h1,
+  h2,
+  h3,
+  .font-display {
+    font-family: var(--font-display);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  ::selection {
+    background: var(--color-pop);
+    color: var(--color-ink);
+  }
+
+  /* Keyboard users get a loud focus ring; mouse users never see it. */
+  :focus-visible {
+    outline: 3px solid var(--color-pop-2);
+    outline-offset: 2px;
+  }
+
+  button {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+}
+
+@layer utilities {
+  .ink-border {
+    border-width: 3px;
+    border-color: var(--color-ink);
+  }
+
+  /* The press-down affordance every chunky control shares. */
+  .chunk {
+    box-shadow: var(--shadow-chunk);
+    transition:
+      transform 90ms cubic-bezier(0.34, 1.56, 0.64, 1),
+      box-shadow 90ms ease;
+  }
+  .chunk:hover:not(:disabled) {
+    transform: translate(-1px, -1px);
+    box-shadow: 5px 5px 0 0 var(--color-ink);
+  }
+  .chunk:active:not(:disabled) {
+    transform: translate(3px, 3px);
+    box-shadow: 1px 1px 0 0 var(--color-ink);
+  }
+
+  .pixelated {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+  }
+
+  .scrollbar-slim {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-ink-faint) transparent;
+  }
+}
+
+/* ---------------- animations ---------------- */
+
+@keyframes wobble {
+  0%,
+  100% {
+    transform: rotate(-2.5deg);
+  }
+  50% {
+    transform: rotate(2.5deg);
+  }
+}
+.animate-wobble {
+  animation: wobble 2.4s ease-in-out infinite;
+}
+
+/* Used by a palette swatch when a counting rule involving it is unsatisfied.
+   This is the only channel those rules have — see RuleEval.hue. */
+@keyframes swatch-buzz {
+  0%,
+  100% {
+    transform: translateX(0) rotate(0deg);
+  }
+  20% {
+    transform: translateX(-3px) rotate(-4deg);
+  }
+  40% {
+    transform: translateX(3px) rotate(4deg);
+  }
+  60% {
+    transform: translateX(-2px) rotate(-2deg);
+  }
+  80% {
+    transform: translateX(2px) rotate(2deg);
+  }
+}
+.animate-buzz {
+  animation: swatch-buzz 0.7s ease-in-out infinite;
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.9) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+.animate-pop-in {
+  animation: pop-in 220ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-rise {
+  animation: rise 260ms ease-out both;
+}
+
+@keyframes confetti-fall {
+  to {
+    transform: translateY(105vh) rotate(var(--spin));
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  /* Keep the buzz legible as a static tilt — it carries real game information. */
+  .animate-buzz {
+    transform: rotate(-4deg);
+  }
+}

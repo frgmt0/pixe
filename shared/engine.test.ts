@@ -141,6 +141,55 @@ describe("assessment", () => {
     expect(a.empty).toBe(1);
   });
 
+  /**
+   * The game never states its rules, so every failure must be visible as
+   * either glowing cells or a reacting swatch. A broken rule that shows
+   * neither is an unwinnable dead end on a fully painted grid.
+   */
+  test("no failure is ever silent, on any grid state", () => {
+    for (const key of LADDER.slice(0, 60)) {
+      const { target, puzzle } = generate(key);
+      const zmap = zoneMap(puzzle.scheme);
+
+      // Probe a spread of states: empty, full-but-wrong, and the target with
+      // increasingly large regions scribbled over in a single hue.
+      const probes: Int8Array[] = [emptyGrid()];
+      for (const h of puzzle.hueSet) {
+        const solid = new Int8Array(CELLS);
+        solid.fill(h);
+        probes.push(solid);
+      }
+      for (const frac of [0.1, 0.5, 0.9]) {
+        const g = Int8Array.from(target);
+        g.fill(puzzle.hueSet[0]!, 0, Math.floor(CELLS * frac));
+        probes.push(g);
+      }
+
+      for (const g of probes) {
+        const ctx = makeCtx(g, zmap);
+        for (const rule of puzzle.rules) {
+          const ev = evaluateRule(rule, g, ctx);
+          if (ev.status === "ok") continue;
+          const visible = ev.violations.length > 0 || ev.hue !== null;
+          if (!visible) {
+            throw new Error(
+              `${key}: ${ev.status} rule with no feedback channel: ${ruleText(rule, puzzle.scheme)}`,
+            );
+          }
+        }
+      }
+    }
+  });
+
+  test("quotaMax reports through the swatch, not by torching the canvas", () => {
+    const g = new Int8Array(CELLS);
+    g.fill(4);
+    const ev = evaluateRule({ t: "quotaMax", a: 4, max: 10 }, g, makeCtx(g, new Uint8Array(CELLS)));
+    expect(ev.status).toBe("broken");
+    expect(ev.violations.length).toBe(0);
+    expect(ev.hue).toBe(4);
+  });
+
   test("bond count matches the reference par", () => {
     for (const key of LADDER.slice(0, 30)) {
       const { target, puzzle } = generate(key);

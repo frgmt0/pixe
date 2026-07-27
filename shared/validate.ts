@@ -9,6 +9,12 @@ export interface Assessment {
   evals: RuleEval[];
   /** Union of every rule's violating cells. */
   badCells: Set<number>;
+  /**
+   * Hues whose palette swatch should react. This is the only feedback channel
+   * counting rules have, so without it a full grid failing only a quota would
+   * show the player nothing at all.
+   */
+  hotHues: Set<number>;
   filled: number;
   empty: number;
   bonds: number;
@@ -40,13 +46,16 @@ export function assess(key: string, grid: Grid): Assessment {
 
   const evals: RuleEval[] = [];
   const badCells = new Set<number>();
+  const hotHues = new Set<number>();
   let allOk = true;
 
   for (const rule of puzzle.rules) {
     const ev = evaluateRule(rule, grid, ctx);
     evals.push(ev);
-    if (ev.status !== "ok") allOk = false;
+    if (ev.status === "ok") continue;
+    allOk = false;
     for (const c of ev.violations) badCells.add(c);
+    if (ev.hue !== null) hotHues.add(ev.hue);
   }
 
   const filled = CELLS - ctx.empties;
@@ -54,6 +63,7 @@ export function assess(key: string, grid: Grid): Assessment {
     puzzle,
     evals,
     badCells,
+    hotHues,
     filled,
     empty: ctx.empties,
     bonds: countBonds(grid, puzzle.bonds),

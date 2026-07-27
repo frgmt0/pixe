@@ -71,18 +71,25 @@ export function makeCtx(grid: Grid, zmap: Uint8Array): EvalCtx {
 export interface RuleEval {
   /** `broken` = definitely wrong now. `pending` = not satisfied but still reachable. */
   status: "ok" | "pending" | "broken";
-  /** Cell indices to highlight. May be empty for global rules like quotaMin. */
+  /** Cell indices to highlight. */
   violations: number[];
   /** Has the player done anything that this rule could plausibly be about? */
   touched: boolean;
-  /** For quota-ish rules, so the card can show a progress bar. */
+  /**
+   * Counting rules have no single guilty cell to glow, so they signal through
+   * the hue's palette swatch instead. Without this a full grid failing only a
+   * `quotaMin` would show the player nothing at all — an unwinnable dead end,
+   * since the game never narrates its rules.
+   */
+  hue: number | null;
+  /** Drives the swatch's reaction intensity. Never rendered as a number. */
   progress: { have: number; need: number; dir: "atLeast" | "atMost" } | null;
 }
 
-const OK: RuleEval = { status: "ok", violations: [], touched: false, progress: null };
+const OK: RuleEval = { status: "ok", violations: [], touched: false, hue: null, progress: null };
 
-function ok(touched: boolean, progress: RuleEval["progress"] = null): RuleEval {
-  return touched || progress ? { status: "ok", violations: [], touched, progress } : OK;
+function ok(touched: boolean, progress: RuleEval["progress"] = null, hue: number | null = null): RuleEval {
+  return touched || progress ? { status: "ok", violations: [], touched, hue, progress } : OK;
 }
 
 export function evaluateRule(rule: Rule, grid: Grid, ctx: EvalCtx): RuleEval {
@@ -100,7 +107,7 @@ export function evaluateRule(rule: Rule, grid: Grid, ctx: EvalCtx): RuleEval {
         if (!allowed[v]) violations.push(i);
       }
       return violations.length
-        ? { status: "broken", violations, touched: true, progress: null }
+        ? { status: "broken", violations, touched: true, hue: null, progress: null }
         : ok(touched);
     }
 
@@ -121,7 +128,7 @@ export function evaluateRule(rule: Rule, grid: Grid, ctx: EvalCtx): RuleEval {
       }
       const touched = ctx.counts[a]! > 0 || ctx.counts[b]! > 0;
       return violations.length
-        ? { status: "broken", violations: dedupe(violations), touched: true, progress: null }
+        ? { status: "broken", violations: dedupe(violations), touched: true, hue: null, progress: null }
         : ok(touched);
     }
 
@@ -145,7 +152,7 @@ export function evaluateRule(rule: Rule, grid: Grid, ctx: EvalCtx): RuleEval {
       }
       const touched = ctx.counts[a]! > 0 || ctx.counts[b]! > 0;
       return violations.length
-        ? { status: "broken", violations: dedupe(violations), touched: true, progress: null }
+        ? { status: "broken", violations: dedupe(violations), touched: true, hue: null, progress: null }
         : ok(touched);
     }
 
@@ -167,8 +174,8 @@ export function evaluateRule(rule: Rule, grid: Grid, ctx: EvalCtx): RuleEval {
         else violations.push(i);
       }
       const touched = ctx.counts[a]! > 0;
-      if (violations.length) return { status: "broken", violations, touched: true, progress: null };
-      if (pending) return { status: "pending", violations: [], touched: true, progress: null };
+      if (violations.length) return { status: "broken", violations, touched: true, hue: null, progress: null };
+      if (pending) return { status: "pending", violations: [], touched: true, hue: null, progress: null };
       return ok(touched);
     }
 
@@ -190,8 +197,8 @@ export function evaluateRule(rule: Rule, grid: Grid, ctx: EvalCtx): RuleEval {
         else violations.push(i);
       }
       const touched = ctx.counts[a]! > 0;
-      if (violations.length) return { status: "broken", violations, touched: true, progress: null };
-      if (pending) return { status: "pending", violations: [], touched: true, progress: null };
+      if (violations.length) return { status: "broken", violations, touched: true, hue: null, progress: null };
+      if (pending) return { status: "pending", violations: [], touched: true, hue: null, progress: null };
       return ok(touched);
     }
 
@@ -206,7 +213,7 @@ export function evaluateRule(rule: Rule, grid: Grid, ctx: EvalCtx): RuleEval {
       }
       const touched = ctx.counts[a]! > 0;
       return violations.length
-        ? { status: "broken", violations: dedupe(violations), touched: true, progress: null }
+        ? { status: "broken", violations: dedupe(violations), touched: true, hue: null, progress: null }
         : ok(touched);
     }
 
@@ -221,7 +228,7 @@ export function evaluateRule(rule: Rule, grid: Grid, ctx: EvalCtx): RuleEval {
       }
       const touched = ctx.counts[a]! > 0;
       return violations.length
-        ? { status: "broken", violations, touched: true, progress: null }
+        ? { status: "broken", violations, touched: true, hue: null, progress: null }
         : ok(touched);
     }
 
@@ -238,7 +245,7 @@ export function evaluateRule(rule: Rule, grid: Grid, ctx: EvalCtx): RuleEval {
       }
       const touched = ctx.counts[a]! > 0;
       return violations.length
-        ? { status: "broken", violations: dedupe(violations), touched: true, progress: null }
+        ? { status: "broken", violations: dedupe(violations), touched: true, hue: null, progress: null }
         : ok(touched);
     }
 
@@ -264,8 +271,10 @@ export function evaluateRule(rule: Rule, grid: Grid, ctx: EvalCtx): RuleEval {
       }
       const touched = ctx.counts[a]! > 0;
       const progress = { have: worst, need: max, dir: "atMost" as const };
+      // Offending rows/columns are precise enough to glow, and the swatch
+      // reacts too so the player can tell it apart from a placement rule.
       return violations.length
-        ? { status: "broken", violations, touched: true, progress }
+        ? { status: "broken", violations, touched: true, hue: a, progress }
         : ok(touched, progress);
     }
 
@@ -281,7 +290,7 @@ export function evaluateRule(rule: Rule, grid: Grid, ctx: EvalCtx): RuleEval {
       }
       const touched = ctx.counts[a]! > 0;
       return violations.length
-        ? { status: "broken", violations, touched: true, progress: null }
+        ? { status: "broken", violations, touched: true, hue: null, progress: null }
         : ok(touched);
     }
 
@@ -290,21 +299,21 @@ export function evaluateRule(rule: Rule, grid: Grid, ctx: EvalCtx): RuleEval {
       const have = ctx.counts[a]!;
       const progress = { have, need: max, dir: "atMost" as const };
       if (have <= max) return ok(have > 0, progress);
-      const violations: number[] = [];
-      for (let i = 0; i < CELLS; i++) if (grid[i] === a) violations.push(i);
-      return { status: "broken", violations, touched: true, progress };
+      // Lighting up every cell of an overused hue would set the whole canvas
+      // on fire and say nothing useful. The swatch carries this one alone.
+      return { status: "broken", violations: [], touched: true, hue: a, progress };
     }
 
     case "quotaMin": {
       const { a, min } = rule;
       const have = ctx.counts[a]!;
       const progress = { have, need: min, dir: "atLeast" as const };
-      if (have >= min) return ok(true, progress);
+      if (have >= min) return ok(true, progress, a);
       // Unreachable even if every remaining empty cell became A.
       if (have + ctx.empties < min) {
-        return { status: "broken", violations: [], touched: true, progress };
+        return { status: "broken", violations: [], touched: true, hue: a, progress };
       }
-      return { status: "pending", violations: [], touched: have > 0, progress };
+      return { status: "pending", violations: [], touched: have > 0, hue: a, progress };
     }
   }
 }
