@@ -13,7 +13,6 @@ import {
  */
 export interface D1 {
   prepare(sql: string): D1Stmt;
-  batch(stmts: D1Stmt[]): Promise<unknown>;
 }
 export interface D1Stmt {
   bind(...values: unknown[]): D1Stmt;
@@ -46,8 +45,11 @@ export function d1Store(db: D1): Store {
 
     solve: (u, k) => get<SolveRow>(SQL.solve, u, k),
     solvedKeys: (u) => all(SQL.solvedKeys, u),
+    // No row back means this player had already banked this puzzle, so the
+    // existing row is the answer. See the note on SQL.insertSolve.
     insertSolve: async (u, k, p, b, art, share, now) =>
-      (await get<SolveRow>(SQL.insertSolve, u, k, p, b, art, share, now))!,
+      (await get<SolveRow>(SQL.insertSolve, u, k, p, b, art, share, now)) ??
+      (await get<SolveRow>(SQL.solve, u, k))!,
     userStats: async (u) =>
       (await get<Stats>(SQL.userStats, u)) ?? { score: 0, solved: 0, bonds: 0 },
     leaderboard: (limit) => all<LeaderRow>(SQL.leaderboard, limit),
@@ -62,11 +64,14 @@ export function d1Store(db: D1): Store {
     noteAttempt: (ip, now, win) => run(SQL.noteAttempt, ip, now + win, now, now, now + win),
     clearAttempts: (ip) => run(SQL.clearAttempts, ip),
 
+    // Two plain statements rather than a `batch`. Reaping runs from the cron
+    // handler, which nothing else calls and whose failures are silent — so it
+    // is the last place to use a method no other query path exercises. These
+    // are independent deletes on an hourly maintenance job; batching them
+    // would buy one round trip in exchange for an untested code path.
     reap: async (now) => {
-      await db.batch([
-        db.prepare(SQL.reapSessions).bind(now),
-        db.prepare(SQL.reapAttempts).bind(now),
-      ]);
+      await run(SQL.reapSessions, now);
+      await run(SQL.reapAttempts, now);
     },
   };
 }

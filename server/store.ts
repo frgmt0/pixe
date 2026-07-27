@@ -154,9 +154,20 @@ export const SQL = {
 
   solve: "SELECT * FROM solves WHERE user_id = ? AND puzzle_key = ?",
   solvedKeys: "SELECT puzzle_key, points FROM solves WHERE user_id = ?",
+  // `DO NOTHING` rather than a plain insert, so banking a solve is safe to
+  // repeat. Two things make that matter: the router checks `solve` and then
+  // inserts without a transaction around the pair, so two submissions racing
+  // each other would otherwise collide on UNIQUE(user_id, puzzle_key); and a
+  // write that commits but fails to answer would then be un-retryable forever,
+  // turning one dropped connection into a permanently lost solve.
+  //
+  // On conflict this returns no row, so both backends fall back to selecting
+  // the row that is already there.
   insertSolve:
     `INSERT INTO solves (user_id, puzzle_key, points, bonds, art, share_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (user_id, puzzle_key) DO NOTHING
+     RETURNING *`,
   userStats:
     `SELECT COALESCE(SUM(points), 0) AS score,
             COUNT(*)                 AS solved,

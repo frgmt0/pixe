@@ -29,6 +29,13 @@ bun test           # 34 tests, including a 520-puzzle solvability sweep
 
 Env: `PORT` (default 3001), `PIXE_DB` (default `./data/pixe.sqlite`), `NODE_ENV`.
 
+Live at **https://pixe.frgmt.xyz**.
+
+```bash
+bun run deploy     # build + wrangler deploy
+bun run db:schema  # regenerate migrations/0001_init.sql after changing SCHEMA
+```
+
 ## How the game teaches without telling
 
 This is the whole design, so it's worth being precise about it.
@@ -173,11 +180,51 @@ shared/     isomorphic engine — the same code validates in the browser and on 
   generate.ts   target-first generation and law derivation
   validate.ts   the single assessment path both sides call
   codec.ts      run-length grid codec
-server/     Bun.serve + bun:sqlite + Bun.password (argon2id), HttpOnly session cookies
+server/     runtime-agnostic API — see "Two runtimes" below
+  store.ts      the storage contract, the schema, and every SQL statement
+  store-sqlite.ts / store-d1.ts    the two backends
+  router.ts     all the routes, written once
+  auth.ts       PBKDF2 hashing, HttpOnly session cookies, login throttle
+  index.ts      Bun entry point
+worker/     Cloudflare Workers entry point
 src/        React 19 + Vite + Tailwind v4
   game/       Board (mutable, diff-based undo), PixelCanvas, palette, toolbar
   screens/    Auth, Ladder, Play, SharedArt
 ```
+
+### Two runtimes, one set of routes
+
+pixe runs both as a Bun process against a local SQLite file and as a Cloudflare
+Worker against D1. Rather than keep two servers in step, the routes are written once
+in `router.ts` and handed the three things that actually differ: a `Store`, the client
+IP, and whether cookies are `Secure`.
+
+That forces three deliberate choices:
+
+- **Every store method is async**, including the `bun:sqlite` one, which answers
+  immediately and returns an already-resolved promise. D1 cannot be made synchronous,
+  so async is the only common denominator.
+- **Passwords use PBKDF2-HMAC-SHA256 via `crypto.subtle`**, not argon2id. Not a
+  preference — argon2 is memory-hard and the better algorithm, but the Workers runtime
+  exposes no such primitive and cannot load a native one. The iteration count is stored
+  inside each hash, so it can be raised later without invalidating existing accounts.
+- **The login throttle lives in the database**, not in a `Map`. On Workers there is no
+  single process to hold that map: requests land in whichever isolate is warm, and
+  isolates are discarded freely. An in-memory counter there does not throttle, it
+  merely appears to.
+
+Banking a solve is idempotent — `INSERT … ON CONFLICT DO NOTHING` plus a select
+fallback. The router checks for an existing solve and then inserts without a
+transaction around the pair, so concurrent submissions of the same puzzle would
+otherwise collide on `UNIQUE(user_id, puzzle_key)`; and a write that commits but fails
+to answer would be un-retryable forever, turning one dropped connection into a
+permanently lost solve.
+
+On Cloudflare, static files come straight off the edge with no Worker invocation;
+`run_worker_first: ["/api/*"]` is what keeps the API reachable, since
+`not_found_handling: "single-page-application"` would otherwise answer *everything*
+with `index.html`. Session and throttle sweeping runs on an hourly cron trigger,
+there being no long-lived process to hold a timer.
 
 **Performance.** The grid is three stacked 64×64 canvases scaled up with
 `image-rendering: pixelated`, not 4096 DOM nodes — every repaint is one 4096-pixel

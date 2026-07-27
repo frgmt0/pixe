@@ -42,8 +42,11 @@ export function sqliteStore(path = process.env.PIXE_DB ?? "./data/pixe.sqlite"):
 
     solve: (u, k) => get<SolveRow>(SQL.solve, u, k),
     solvedKeys: (u) => all(SQL.solvedKeys, u),
+    // No row back means this player had already banked this puzzle, so the
+    // existing row is the answer. See the note on SQL.insertSolve.
     insertSolve: async (u, k, p, b, art, share, now) =>
-      (await get<SolveRow>(SQL.insertSolve, u, k, p, b, art, share, now))!,
+      (await get<SolveRow>(SQL.insertSolve, u, k, p, b, art, share, now)) ??
+      (await get<SolveRow>(SQL.solve, u, k))!,
     userStats: async (u) =>
       (await get<Stats>(SQL.userStats, u)) ?? { score: 0, solved: 0, bonds: 0 },
     leaderboard: (limit) => all<LeaderRow>(SQL.leaderboard, limit),
