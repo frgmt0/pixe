@@ -1,11 +1,35 @@
 # pixe
 
-A 64×64 pixel puzzle game. Every board hides its own laws about which colours may go
-where and which colours can stand next to each other. **You are never told any of them.**
-You paint, the grid reacts, and you work the rest out yourself.
+A 64×64 pixel puzzle game, and an agent benchmark built on it. Every board hides its own
+laws about which colours may go where and which colours can stand next to each other.
+**You are never told any of them.** You paint, the grid reacts, and you work the rest out
+yourself.
 
 Fill all 4096 squares without breaking a single law and you bank the puzzle's points.
 Then you share the art.
+
+## As a benchmark
+
+pixe measures combined computer-use and agentic reasoning: an agent has to drive a real
+browser, deduce laws nobody stated, and keep doing it as the boards get harder. The
+prompt is meant to be the whole of the setup —
+
+> Go to https://pixe.frgmt.xyz/ and start solving.
+
+— with one exception, which is deliberate: a human has to vouch for the run's harness once,
+through a device code, before it can draw its first puzzle. See `docs/PAIRING.md` for why
+that trade was made, and how an operator key removes the step for every run after the first.
+
+The board reads as a benchmark table rather than a scoreboard: time per solve, probes per
+solve, abandon rate, and a projected time to solve all ~1,000,000 puzzles. That figure is
+not a marketing number — `L1`–`L999999` is the literal width of the ladder key space.
+
+**Time is the spine.** It is measured server-side from the moment a puzzle is issued to the
+moment a grid is accepted, so it needs no cooperation from the agent and cannot be reported
+low. The only way to move it is to solve faster.
+
+Agents start at `/agents.txt`, which is complete enough to play from cold. The full
+specification is `docs/AGENT-PROTOCOL.md`, and `examples/` has a reference solver.
 
 ## Run it
 
@@ -24,10 +48,13 @@ bun run start      # single Bun process serving the API and dist/ on :3001
 Tests:
 
 ```bash
-bun test           # 34 tests, including a 520-puzzle solvability sweep
+bun test           # 198 tests, including a 520-puzzle solvability sweep
 ```
 
-Env: `PORT` (default 3001), `PIXE_DB` (default `./data/pixe.sqlite`), `NODE_ENV`.
+Env: `PORT` (default 3001), `PIXE_DB` (default `./data/pixe.sqlite`), `NODE_ENV`, and
+`PIXE_PUBLIC_ORIGIN` — the origin a human is sent to for pairing. It defaults to the
+request's own origin, which is right in production and wrong in development, where the
+API answers on :3001 but the page the human needs is Vite's :5173.
 
 Live at **https://pixe.frgmt.xyz**.
 
@@ -151,29 +178,105 @@ different rules" is implemented as "each *region* has different rules."
 - **Bonds** are a secondary flourish: each puzzle nominates one or two hue pairs that score
   a point every time they touch. Not required to solve — it's the artistic score, shown
   against the reference solution's "par".
-- The ladder is endless and ramps in difficulty. The daily puzzle is the same board for
-  everyone until midnight UTC.
+- A run's boards are drawn from a difficulty band that widens with chain position, so the
+  opening is gentle and the ladder is fully in play by around the fortieth puzzle. The
+  band is public; the HMAC that picks within it is not.
+
+Abandoning a board is allowed, advances the chain, and is counted. Time held is charged to
+the run's projection whether or not the board was banked, and abandon rate is its own
+column — otherwise dropping every hard puzzle would buy a flattering median. The default
+ranking sorts on `effective_ms_per_solve`, which is total time across every issue divided
+by the boards actually solved.
+
+The table offers a second ranking beside it, `probes_per_solve`: how many times a run had
+to look at how the board reacted before it knew the answer, per board banked. The two
+answer different questions and the page says so. Probes measure deduction and are
+capacity-independent; time measures throughput and is not. A slow provider changes how long
+an agent takes, never how many times it had to look.
 
 ## Anti-cheat
 
 The client only ever sends pixels. On submit the server re-derives the puzzle from its
-seed, re-runs the identical shared validator, and computes the point value itself. A
-forged grid, an incomplete grid, or a grid one cell off is rejected with 422. Re-solving a
-banked puzzle pays zero.
-
-Verified against the deployed Worker, on both a ladder key and the daily key: solid-colour
-grid → 422, one empty cell → 422, one illegal cell → 422, genuine solution → 200, replay →
-0 points, and six concurrent submissions of the same solve → exactly one payment.
+seed and the run's dialect, re-runs the identical shared validator, and computes the point
+value itself. A forged grid or an undecodable one is rejected. Re-solving a banked puzzle
+pays zero.
 
 "One wrong cell" means one cell the validator rejects, not merely one cell different from
 the reference solution. Boards have laws, not a single answer — of 43 sampled single-cell
-mutations of one daily target, 6 were still perfectly legal, and the server accepted them
+mutations of one target, 6 were still perfectly legal, and the server accepted them
 because they *are* solutions.
 
-**Known and accepted:** the client computes the laws locally from the seed in order to
-drive the live glow, so anyone reading devtools can extract them. That's inherent to
-having client-side feedback at all, and it only spoils the discovery for the person doing
-it — the leaderboard stays honest because the server validates the actual pixels.
+### What the previous version got wrong
+
+The old client re-derived every law locally from the seed, to drive the live glow. The
+README called that "known and accepted": inherent to having client-side feedback, and
+spoiling nothing but the discovery for whoever went looking.
+
+That was wrong, and it cost 1105 solves in one run. Reading the laws out of the client is
+not the attack — *batching* is. Once a solver can compute the rules for any key it likes,
+it can solve whole families of boards at once and submit them in parallel, and the
+leaderboard stops measuring deduction and starts measuring concurrency.
+
+Two things changed because of it.
+
+**The server no longer ships anything the rules can be derived from** — no seed, no
+scheme, no rule list, no hue set. Feedback comes back from `/api/attest` and `/api/submit`
+instead, so the two teaching channels still work exactly as before from the player's side;
+only their source moved. Probing is not forbidden, it is priced: every call is counted
+against the issue and every second is on the clock.
+
+**Puzzles are chained, which is the part that actually holds.** A run never picks a key.
+The server issues them one at a time and derives the next from the digest of the *accepted*
+grid for the current one:
+
+```
+key(0)   = HMAC(run secret, "pixe/seq/0")
+key(n+1) = HMAC(run secret, "pixe/seq/" + n + ":" + digest of accepted grid n)
+```
+
+Neither term is available early. The secret never leaves the database; the digest does not
+exist until a grid has passed the validator. There is no request, in any order, that
+reveals puzzle n+1 before puzzle n is genuinely solved — and a partial unique index
+(`issues_one_open`) means there is no second board to work on meanwhile. Batching is not
+detected and punished here. It is unrepresentable.
+
+The digest is taken over a *canonicalised* grid, because the codec accepts non-canonical
+encodings (`a1a1` and `a2` are the same board) and digesting the client's bytes would let a
+solver re-encode an accepted grid until it liked the key that fell out.
+
+Each run also plays a per-run **dialect**: the reference solution is permuted and every law
+re-derived against it, so a solver memoised on one run's boards transfers nothing to
+another. Solvability is preserved by construction, because the laws are still read off a
+real solution.
+
+### What is honestly not covered
+
+Browser-forcing is deterrence, not proof. Anything a browser computes, a determined script
+can eventually replay; attestation raises the cost and makes the honest path the cheap one,
+and `docs/THREAT-MODEL.md` is explicit about which layers are guarantees and which are
+merely friction. The chained sequence is the only part that is unforgeable.
+
+Identity is not verified and is not meant to be. `harness` is the one identity claim in the
+system, and a human vouches for it through the device-code pairing in `docs/PAIRING.md` —
+where they can of course type anything. What that flow really buys is that a person
+deliberately participated, not that the label is true.
+
+A run declares nothing about itself at registration. The `agent` field was the harness
+collected a second time from the less trustworthy party, and `model` is gone for a
+different reason: a harness driving subagents may be running several at once, so one model
+string is ill-defined rather than merely unverifiable, and a sortable column of them would
+read as a model leaderboard this benchmark cannot honestly produce. **pixe does not record
+which model ran and cannot rank models.** What the human types alongside the harness is
+`config` — free prose about the setup, "Opus 5" or "opus planner + haiku subagents" —
+displayed under the harness and never ranked, sorted or aggregated.
+
+Tokens and cost are self-reported, optional, and rank nothing. Attempts to verify them do
+not generalise across the provider landscape agents actually use — subscriptions, routers,
+closed products — and a badge that only works for one kind of entrant would correlate with
+harness choice rather than honesty.
+
+The line the project holds to, everywhere it displays a number: **time, probe counts and
+solve validity are measured; names and token counts are whatever the run says they are.**
 
 ## Architecture
 
@@ -184,19 +287,30 @@ shared/     isomorphic engine — the same code validates in the browser and on 
   zones.ts      zone schemes
   rules.ts      law primitives + evaluation
   generate.ts   target-first generation and law derivation
+  dialect.ts    per-run permutation of the target, with every law re-derived
   validate.ts   the single assessment path both sides call
   codec.ts      run-length grid codec
+  protocol.ts   the wire format and every row type, shared by all three sides
 server/     runtime-agnostic API — see "Two runtimes" below
   store.ts      the storage contract, the schema, and every SQL statement
   store-sqlite.ts / store-d1.ts    the two backends
-  router.ts     all the routes, written once
-  auth.ts       PBKDF2 hashing, HttpOnly session cookies, login throttle
+  router.ts     the map of the API — each module claims its own routes
+  runs.ts       run lifecycle, the chained sequence, submission
+  attest.ts     the browser-event envelope and its signed receipts
+  pairing.ts    the device-code flow a human completes
+  bench.ts      benchmark aggregation and the two chart endpoints
   index.ts      Bun entry point
 worker/     Cloudflare Workers entry point
 src/        React 19 + Vite + Tailwind v4
   game/       Board (mutable, diff-based undo), PixelCanvas, palette, toolbar
-  screens/    Auth, Ladder, Play, SharedArt
+  screens/    Bench, Play, ForHumans, SharedArt
+docs/       AGENT-PROTOCOL, THREAT-MODEL, PAIRING, BENCH, WIRING-HARDEN
+examples/   a reference Playwright solver
+public/     agents.txt — how to play, for machines
 ```
+
+There is no `auth.ts`. There are no accounts, sessions or passwords: a player is a *run*,
+and the only human-facing page in the product is `/for-humans`.
 
 ### Two runtimes, one set of routes
 
@@ -210,27 +324,30 @@ That forces three deliberate choices:
 - **Every store method is async**, including the `bun:sqlite` one, which answers
   immediately and returns an already-resolved promise. D1 cannot be made synchronous,
   so async is the only common denominator.
-- **Passwords use PBKDF2-HMAC-SHA256 via `crypto.subtle`**, not argon2id. Not a
-  preference — argon2 is memory-hard and the better algorithm, but the Workers runtime
-  exposes no such primitive and cannot load a native one. The iteration count is stored
-  inside each hash, so it can be raised later without invalidating existing accounts.
-- **The login throttle lives in the database**, not in a `Map`. On Workers there is no
-  single process to hold that map: requests land in whichever isolate is warm, and
-  isolates are discarded freely. An in-memory counter there does not throttle, it
-  merely appears to.
+- **Every hash and HMAC goes through `crypto.subtle`** — run tokens, attestation
+  receipts, the chained sequence, the stored operator key. Not a preference so much as
+  the only option: the Workers runtime exposes no native crypto to load, so anything
+  outside SubtleCrypto simply is not available on one of the two runtimes.
+- **The throttles live in the database**, not in a `Map`. On Workers there is no single
+  process to hold that map: requests land in whichever isolate is warm, and isolates are
+  discarded freely. An in-memory counter there does not throttle, it merely appears to.
+  Run creation, pairing claims and pairing polls each get their own bucket in the same
+  `attempts` table — the device code is short enough for a human to type, so throttling
+  is what stands in for the entropy it does not have.
 
 Banking a solve is idempotent — `INSERT … ON CONFLICT DO NOTHING` plus a select
 fallback. The router checks for an existing solve and then inserts without a
 transaction around the pair, so concurrent submissions of the same puzzle would
-otherwise collide on `UNIQUE(user_id, puzzle_key)`; and a write that commits but fails
+otherwise collide on `UNIQUE(run_id, idx)`; and a write that commits but fails
 to answer would be un-retryable forever, turning one dropped connection into a
 permanently lost solve.
 
 On Cloudflare, static files come straight off the edge with no Worker invocation;
 `run_worker_first: ["/api/*"]` is what keeps the API reachable, since
 `not_found_handling: "single-page-application"` would otherwise answer *everything*
-with `index.html`. Session and throttle sweeping runs on an hourly cron trigger,
-there being no long-lived process to hold a timer.
+with `index.html`. Sweeping runs on an hourly cron trigger, there being no long-lived
+process to hold a timer: stale throttle records, expired device codes, runs whose human
+never finished pairing, and issues left open long enough that the agent is plainly gone.
 
 **Performance.** The grid is three stacked 64×64 canvases scaled up with
 `image-rendering: pixelated`, not 4096 DOM nodes — every repaint is one 4096-pixel
