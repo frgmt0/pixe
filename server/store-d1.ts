@@ -1,6 +1,7 @@
 import {
-  SQL,
-  type ArtRow, type LeaderRow, type SolveRow, type Stats, type Store, type UserRow,
+  ISSUE_TTL_MS, PAIR_CODE_TTL_MS, SQL,
+  type ArtRow, type ChartPoint, type IssueRow, type IssueSpan, type NewRunSolve,
+  type OperatorRow, type PairCodeRow, type RunRow, type RunSolveRow, type Store,
 } from "./store";
 
 /**
@@ -35,30 +36,59 @@ export function d1Store(db: D1): Store {
   };
 
   return {
-    userByName: (n) => get<UserRow>(SQL.userByName, n),
-    userById: (id) => get<UserRow>(SQL.userById, id),
-    createUser: (name, lower, pass, now) => get<UserRow>(SQL.createUser, name, lower, pass, now),
+    createOperator: async (o) =>
+      (await get<OperatorRow>(
+        SQL.createOperator, o.id, o.key_hash, o.display, o.harness, o.config, o.contact,
+        o.created_at, o.last_at,
+      ))!,
+    operatorById: (id) => get<OperatorRow>(SQL.operatorById, id),
+    operatorByKeyHash: (h) => get<OperatorRow>(SQL.operatorByKeyHash, h),
+    touchOperator: (id, now) => run(SQL.touchOperator, now, id),
 
-    createSession: (t, u, now, exp) => run(SQL.createSession, t, u, now, exp),
-    sessionUser: (t, now) => get<UserRow>(SQL.sessionUser, t, now),
-    dropSession: (t) => run(SQL.dropSession, t),
+    createPairCode: (p) =>
+      run(SQL.createPairCode, p.user_code, p.run_id, p.created_at, p.expires_at),
+    pairCode: (code) => get<PairCodeRow>(SQL.pairCode, code),
+    claimPairCode: (code, op, now) => run(SQL.claimPairCode, now, op, code),
+    attachOperator: (runId, op, harness, config, now) =>
+      run(SQL.attachOperator, op, harness, config, now, runId),
 
-    solve: (u, k) => get<SolveRow>(SQL.solve, u, k),
-    solvedKeys: (u) => all(SQL.solvedKeys, u),
-    // No row back means this player had already banked this puzzle, so the
-    // existing row is the answer. See the note on SQL.insertSolve.
-    insertSolve: async (u, k, p, b, art, share, now) =>
-      (await get<SolveRow>(SQL.insertSolve, u, k, p, b, art, share, now)) ??
-      (await get<SolveRow>(SQL.solve, u, k))!,
-    userStats: async (u) =>
-      (await get<Stats>(SQL.userStats, u)) ?? { score: 0, solved: 0, bonds: 0 },
-    leaderboard: (limit) => all<LeaderRow>(SQL.leaderboard, limit),
+    createRun: async (r) =>
+      (await get<RunRow>(
+        SQL.createRun, r.id, r.secret, r.harness, r.config, r.operator_id, r.dialect,
+        r.created_at, r.last_at, r.status,
+      ))!,
+    runById: (id) => get<RunRow>(SQL.runById, id),
+    touchRun: (id, now) => run(SQL.touchRun, now, id),
+    closeRun: (id, now, status) => run(SQL.closeRun, status, now, id),
+    runs: (limit) => all<RunRow>(SQL.runs, limit),
+
+    openIssue: (rid) => get<IssueRow>(SQL.openIssue, rid),
+    issueAt: (rid, idx) => get<IssueRow>(SQL.issueAt, rid, idx),
+    // No row back means a concurrent /api/next already opened this index, so
+    // the row that is already there is the answer. See SQL.insertIssue.
+    insertIssue: async (rid, idx, key, now) =>
+      (await get<IssueRow>(SQL.insertIssue, rid, idx, key, now)) ??
+      (await get<IssueRow>(SQL.issueAt, rid, idx))!,
+    closeIssue: (rid, idx, now, outcome) => run(SQL.closeIssue, now, outcome, rid, idx),
+    nextIdx: async (rid) => (await get<{ n: number }>(SQL.nextIdx, rid))?.n ?? 0,
+    issueDurations: (rid) => all<IssueSpan>(SQL.issueDurations, rid),
+    bumpCalls: (rid, idx) => run(SQL.bumpCalls, rid, idx),
+    callCount: async (rid, idx) => (await get<{ n: number }>(SQL.callCount, rid, idx))?.n ?? 0,
+    bumpProbes: (rid, idx) => run(SQL.bumpProbes, rid, idx),
+    probeCount: async (rid, idx) => (await get<{ n: number }>(SQL.probeCount, rid, idx))?.n ?? 0,
+
+    insertRunSolve: async (s: NewRunSolve) =>
+      (await get<RunSolveRow>(
+        SQL.insertRunSolve, s.run_id, s.idx, s.puzzle_key, s.points, s.bonds, s.difficulty,
+        s.wall_ms, s.api_calls, s.probes, s.events, s.tokens_in, s.tokens_out, s.cost_micro,
+        s.art, s.share_id, s.created_at,
+      )) ?? (await get<RunSolveRow>(SQL.solveAt, s.run_id, s.idx))!,
+    runSolves: (rid) => all<RunSolveRow>(SQL.runSolves, rid),
+    solveAt: (rid, idx) => get<RunSolveRow>(SQL.solveAt, rid, idx),
+    allSolvesForCharts: (limit) => all<ChartPoint>(SQL.allSolvesForCharts, limit),
 
     artByShare: (s) => get<ArtRow>(SQL.artByShare, s),
     recentArt: (limit) => all<ArtRow>(SQL.recentArt, limit),
-
-    getProgress: async (u, k) => (await get<{ art: string }>(SQL.getProgress, u, k))?.art ?? null,
-    putProgress: (u, k, art, now) => run(SQL.putProgress, u, k, art, now),
 
     attemptCount: async (ip, now) => (await get<{ n: number }>(SQL.attemptCount, ip, now))?.n ?? 0,
     noteAttempt: (ip, now, win) => run(SQL.noteAttempt, ip, now + win, now, now, now + win),
@@ -67,11 +97,13 @@ export function d1Store(db: D1): Store {
     // Two plain statements rather than a `batch`. Reaping runs from the cron
     // handler, which nothing else calls and whose failures are silent — so it
     // is the last place to use a method no other query path exercises. These
-    // are independent deletes on an hourly maintenance job; batching them
-    // would buy one round trip in exchange for an untested code path.
+    // are independent writes on an hourly maintenance job; batching them would
+    // buy one round trip in exchange for an untested code path.
     reap: async (now) => {
-      await run(SQL.reapSessions, now);
       await run(SQL.reapAttempts, now);
+      await run(SQL.reapIssues, now, now - ISSUE_TTL_MS);
+      await run(SQL.reapPairCodes, now);
+      await run(SQL.reapPendingRuns, now - PAIR_CODE_TTL_MS);
     },
   };
 }
