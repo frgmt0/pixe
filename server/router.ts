@@ -1,23 +1,8 @@
-import { decodeGrid, encodeGrid } from "../shared/codec";
-import { generatePuzzle, isValidKey } from "../shared/generate";
-import { assess } from "../shared/validate";
-import {
-  DUMMY_HASH,
-  THROTTLE_WINDOW_MS,
-  clearCookie,
-  currentUser,
-  endSession,
-  hashPassword,
-  sessionCookie,
-  startSession,
-  throttled,
-  tokenFrom,
-  validateCredentials,
-  verifyPassword,
-} from "./auth";
-import type { Store, UserRow } from "./store";
-
-const MAX_BODY = 64 * 1024;
+import { dialectPuzzle } from "../shared/dialect";
+import { handleBench, handleBenchPoints } from "./bench";
+import { handlePairApi } from "./pairing";
+import { handleRunApi, type RunDeps } from "./runs";
+import type { Store } from "./store";
 
 /**
  * Everything a request needs that differs between runtimes. The routes below
@@ -41,109 +26,41 @@ function json(data: unknown, init: ResponseInit = {}): Response {
 
 const fail = (status: number, error: string) => json({ error }, { status });
 
-async function readJson(req: Request): Promise<Record<string, unknown> | null> {
-  const len = Number(req.headers.get("content-length") ?? 0);
-  if (len > MAX_BODY) return null;
-  try {
-    const body = await req.json();
-    return body && typeof body === "object" ? (body as Record<string, unknown>) : null;
-  } catch {
-    return null;
-  }
-}
-
-function shareId(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(8));
-  return Array.from(bytes, (b) => b.toString(36).padStart(2, "0")).join("").slice(0, 12);
-}
-
-const publicUser = (u: UserRow) => ({ id: u.id, name: u.name });
-
-async function stateFor(store: Store, u: UserRow) {
-  const [stats, rows] = await Promise.all([store.userStats(u.id), store.solvedKeys(u.id)]);
-  return {
-    user: publicUser(u),
-    stats,
-    solves: rows.map((r) => ({ key: r.puzzle_key, points: r.points })),
-  };
-}
-
 /* ------------------------------------------------------------------ */
 /* Routes                                                              */
 /* ------------------------------------------------------------------ */
 
 export async function handleApi(req: Request, url: URL, deps: Deps): Promise<Response> {
-  const { store, ip, secure } = deps;
+  const { store } = deps;
   const path = url.pathname;
-  const method = req.method;
 
-  /* --- auth ------------------------------------------------------- */
+  // Pairing goes first and deliberately so. It owns `POST /api/run` outright,
+  // and it intercepts `GET /api/run/me` only while a run is still `pending` —
+  // handing back `null` the moment it is paired, so the run handler below
+  // answers everything else. Reversing these two would let a run register
+  // without a human ever being asked to vouch for it.
+  const paired = await handlePairApi(req, url, deps);
+  if (paired) return paired;
 
-  if (path === "/api/signup" || path === "/api/login") {
-    if (method !== "POST") return fail(405, "Method not allowed");
-    if (await throttled(store, ip)) {
-      return fail(429, "Too many attempts. Take a breather and try again shortly.");
-    }
+  // The chained sequence, attestation and submission — every route scoped to a
+  // single run. Answers `null` for anything it does not own, so this file stays
+  // the map of the API rather than a copy of it.
+  const run = await handleRunApi(req, url, deps satisfies RunDeps);
+  if (run) return run;
 
-    const body = await readJson(req);
-    if (!body) return fail(400, "Bad request");
-    const { name, password } = body;
+  /* --- the benchmark ---------------------------------------------- */
 
-    const invalid = validateCredentials(name, password);
-    if (invalid) return fail(400, invalid);
-    const nameStr = name as string;
-    const passStr = password as string;
+  if (path === "/api/bench") return handleBench(req, url, deps);
+  if (path === "/api/bench/points") return handleBenchPoints(req, url, deps);
 
-    if (path === "/api/signup") {
-      if (await store.userByName(nameStr.toLowerCase())) {
-        return fail(409, "That name is taken. Try adding a number, everyone else does.");
-      }
-      await store.noteAttempt(ip, Date.now(), THROTTLE_WINDOW_MS);
-      const hash = await hashPassword(passStr);
-      const user = await store.createUser(nameStr, nameStr.toLowerCase(), hash, Date.now());
-      if (!user) return fail(500, "Could not create that account.");
-      await store.clearAttempts(ip);
-      const token = await startSession(store, user.id);
-      return json(await stateFor(store, user), {
-        headers: { "set-cookie": sessionCookie(token, secure) },
-      });
-    }
-
-    await store.noteAttempt(ip, Date.now(), THROTTLE_WINDOW_MS);
-    const user = await store.userByName(nameStr.toLowerCase());
-    // Always run a verify so a missing account and a wrong password take a
-    // similar amount of time.
-    const okPass = await verifyPassword(passStr, user?.pass ?? DUMMY_HASH);
-    if (!user || !okPass) return fail(401, "Wrong name or password.");
-    await store.clearAttempts(ip);
-    const token = await startSession(store, user.id);
-    return json(await stateFor(store, user), {
-      headers: { "set-cookie": sessionCookie(token, secure) },
-    });
-  }
-
-  if (path === "/api/logout") {
-    if (method !== "POST") return fail(405, "Method not allowed");
-    await endSession(store, tokenFrom(req));
-    return json({ ok: true }, { headers: { "set-cookie": clearCookie(secure) } });
-  }
-
-  if (path === "/api/me") {
-    const user = await currentUser(store, req);
-    return user ? json(await stateFor(store, user)) : json({ user: null });
-  }
-
-  /* --- public reads ----------------------------------------------- */
-
-  if (path === "/api/leaderboard") {
-    return json({ rows: await store.leaderboard(100) });
-  }
+  /* --- public reads ------------------------------------------------ */
 
   if (path === "/api/gallery") {
     const rows = (await store.recentArt(24)).map((r) => ({
       shareId: r.share_id,
       key: r.puzzle_key,
-      name: r.name,
+      harness: r.harness,
+      config: r.config,
       bonds: r.bonds,
       points: r.points,
       art: r.art,
@@ -156,91 +73,29 @@ export async function handleApi(req: Request, url: URL, deps: Deps): Promise<Res
   if (art) {
     const row = await store.artByShare(art[1]!);
     if (!row) return fail(404, "No such artwork.");
-    const puzzle = generatePuzzle(row.puzzle_key);
+
+    // Derived through the run's own dialect, not the base generator: every run
+    // plays a perturbed variant, so `generatePuzzle(key)` would reveal a set of
+    // laws this board never had. The salt itself stays here — it is per-run, so
+    // publishing it for one finished board would publish every other board in
+    // that run.
+    const { puzzle } = dialectPuzzle(row.dialect, row.puzzle_key);
     return json({
       shareId: row.share_id,
       key: row.puzzle_key,
       title: puzzle.title,
-      // Safe to reveal: this puzzle is already solved by this player, and the
-      // reveal is the whole point of the share page.
+      // Safe to reveal: this board is solved and banked, and the reveal is the
+      // whole point of the share page.
       rules: puzzle.rules,
       scheme: puzzle.scheme,
       bondPairs: puzzle.bonds,
       parBonds: puzzle.parBonds,
-      name: row.name,
+      harness: row.harness,
+      config: row.config,
       points: row.points,
       bonds: row.bonds,
       art: row.art,
       at: row.created_at,
-    });
-  }
-
-  /* --- authenticated puzzle state --------------------------------- */
-
-  const prog = path.match(/^\/api\/progress\/([A-Za-z0-9-]{1,24})$/);
-  if (prog) {
-    const user = await currentUser(store, req);
-    if (!user) return fail(401, "Sign in first.");
-    const key = prog[1]!;
-    if (!isValidKey(key)) return fail(400, "Unknown puzzle.");
-
-    if (method === "GET") {
-      return json({ art: await store.getProgress(user.id, key) });
-    }
-    if (method === "PUT") {
-      const body = await readJson(req);
-      if (!body) return fail(400, "Bad request");
-      // Round-trip through the decoder so we never persist a malformed blob.
-      const grid = decodeGrid(body.art);
-      if (!grid) return fail(400, "That canvas is not a canvas.");
-      await store.putProgress(user.id, key, encodeGrid(grid), Date.now());
-      return json({ ok: true });
-    }
-    return fail(405, "Method not allowed");
-  }
-
-  const solve = path.match(/^\/api\/solve\/([A-Za-z0-9-]{1,24})$/);
-  if (solve) {
-    if (method !== "POST") return fail(405, "Method not allowed");
-    const user = await currentUser(store, req);
-    if (!user) return fail(401, "Sign in first.");
-    const key = solve[1]!;
-    if (!isValidKey(key)) return fail(400, "Unknown puzzle.");
-
-    const body = await readJson(req);
-    if (!body) return fail(400, "Bad request");
-    const grid = decodeGrid(body.art);
-    if (!grid) return fail(400, "That canvas is not a canvas.");
-
-    // The only thing the client is trusted with is the pixels. Rules, point
-    // value and bond count are all re-derived here from the seed.
-    const result = assess(key, grid);
-    if (!result.solved) {
-      return fail(422, "That grid does not satisfy every law yet. Nice try though.");
-    }
-
-    const existing = await store.solve(user.id, key);
-    if (existing) {
-      return json({
-        alreadySolved: true,
-        points: 0,
-        bonds: result.bonds,
-        shareId: existing.share_id,
-        ...(await stateFor(store, user)),
-      });
-    }
-
-    const row = await store.insertSolve(
-      user.id, key, result.puzzle.points, result.bonds, encodeGrid(grid), shareId(), Date.now(),
-    );
-
-    return json({
-      alreadySolved: false,
-      points: row.points,
-      bonds: row.bonds,
-      parBonds: result.puzzle.parBonds,
-      shareId: row.share_id,
-      ...(await stateFor(store, user)),
     });
   }
 
