@@ -139,6 +139,11 @@ describe("puzzle shape", () => {
       return { zmap, palettes };
     };
 
+    // The explicit timeout is not papering over a slow test: this one assesses
+    // the full cartesian product of per-zone hues across 120 boards, which is
+    // tens of thousands of `assess` calls and legitimately runs for seconds on
+    // a slower machine. The default 5s is close enough to that to fail on
+    // timing alone, which reads as a broken generator rather than a busy CPU.
     test("no puzzle falls to one solid hue per zone", () => {
       for (const key of LADDER.slice(0, 120)) {
         const { zmap, palettes } = zoneInfo(key);
@@ -150,7 +155,7 @@ describe("puzzle shape", () => {
           }
         }
       }
-    });
+    }, 30_000);
 
     /**
      * The strategy after solid fills, and a sneakier one: a mechanical pattern
