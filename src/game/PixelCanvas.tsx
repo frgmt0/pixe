@@ -238,7 +238,7 @@ export function PixelCanvas({
   return (
     <div
       ref={wrapRef}
-      className="relative aspect-square w-full touch-none overflow-hidden rounded-xl ink-border bg-cloth shadow-chunk-lg"
+      className="relative aspect-square w-full touch-none overflow-hidden rounded-[3px] rule-all bg-sunk"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={endDrag}
@@ -253,9 +253,31 @@ export function PixelCanvas({
       role="application"
       aria-label={`${GRID} by ${GRID} painting grid`}
     >
-      <canvas ref={artRef} width={GRID} height={GRID} className={layer} />
-      <canvas ref={marksRef} width={GRID} height={GRID} className={layer} />
-      <canvas ref={cursorRef} className={`${layer} pointer-events-none`} />
+      {/* Stacking order is a documented contract with the reference solver
+          (`examples/README.md`): art first, violations second, cursor third.
+          The solver has always found these positionally — first canvas is the
+          artwork, second is the layer whose non-zero alpha means "this cell is
+          flashing". The `data-pixe-layer` attributes are new and are the stable
+          handle to use instead; the order is unchanged, so both work. */}
+      <canvas
+        ref={artRef}
+        data-pixe-layer="art"
+        width={GRID}
+        height={GRID}
+        className={layer}
+      />
+      <canvas
+        ref={marksRef}
+        data-pixe-layer="violations"
+        width={GRID}
+        height={GRID}
+        className={layer}
+      />
+      <canvas
+        ref={cursorRef}
+        data-pixe-layer="cursor"
+        className={`${layer} pointer-events-none`}
+      />
       <span className="sr-only">
         Currently painting with hue {hue}. Use the palette and tool buttons to change modes.
       </span>

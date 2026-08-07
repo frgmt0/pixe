@@ -14,15 +14,22 @@ interface Props {
  * the canvas, so the swatch itself reacts instead. It never says what is
  * wrong — only that this colour is involved — which keeps the "figure it out
  * yourself" contract intact while making sure no failure is ever invisible.
+ *
+ * The redesign strips the swatches back to flat colour chips: the eight hues
+ * are the only saturated thing in the product now, and they were previously
+ * competing with a 3px ink border, a hard shadow, an emoji and a tick badge.
+ * Two states survive, because both are information rather than decoration —
+ * *selected* (an ink ring outside the chip) and *buzzing* (the shiver, plus a
+ * ring in the status colour so the signal is not motion-alone).
  */
 export function Palette({ hue, onPick, counts, hot }: Props) {
   return (
     <div>
       <div className="mb-2 flex items-baseline justify-between">
-        <h2 className="font-display text-sm uppercase tracking-wide text-ink-soft">Paint</h2>
-        <span className="text-[11px] font-bold text-ink-faint">1–8 or [ ]</span>
+        <h2 className="t-micro text-muted">Paint</h2>
+        <span className="t-num text-[10px] text-muted">1–8 · [ ]</span>
       </div>
-      <div className="grid grid-cols-4 gap-2">
+      <div className="grid grid-cols-4 gap-1.5">
         {HUES.map((h) => {
           const selected = hue === h.id;
           const buzzing = hot.has(h.id);
@@ -32,29 +39,22 @@ export function Palette({ hue, onPick, counts, hot }: Props) {
               type="button"
               onClick={() => onPick(h.id)}
               title={`${h.name} — ${counts[h.id] ?? 0} cells`}
+              /* The solver reads this string. Do not reword the buzz clause. */
               aria-label={`${h.name}, ${counts[h.id] ?? 0} cells${buzzing ? ", something is off with this colour" : ""}`}
               aria-pressed={selected}
               className={cn(
-                "group relative flex aspect-square flex-col items-center justify-center rounded-xl ink-border transition-transform",
-                selected ? "shadow-chunk -translate-y-0.5 scale-105" : "shadow-chunk-sm hover:-translate-y-0.5",
-                buzzing && "animate-buzz",
+                "group relative flex aspect-square flex-col items-center justify-end rounded-[3px] pb-1 transition-shadow",
+                // An outside ring, so the chip's own colour is never overpainted.
+                selected && "ring-1 ring-ink ring-offset-2 ring-offset-page",
+                buzzing && "animate-buzz ring-1 ring-bad ring-offset-1 ring-offset-page",
               )}
               style={{ backgroundColor: h.hex }}
             >
-              <span className="text-lg leading-none drop-shadow-sm">{h.emoji}</span>
-              <span className="mt-0.5 rounded bg-ink/75 px-1 text-[10px] font-bold leading-4 text-white tabular-nums">
+              {/* The count reads over eight different hues, so it carries its
+                  own scrim rather than trusting any one of them. */}
+              <span className="t-num rounded-[2px] bg-black/45 px-1 text-[9px] leading-[13px] text-white">
                 {counts[h.id] ?? 0}
               </span>
-              {selected && (
-                <span className="pointer-events-none absolute -right-1.5 -top-1.5 grid size-5 place-items-center rounded-full ink-border bg-ink text-[10px] leading-none text-paper">
-                  ✓
-                </span>
-              )}
-              {buzzing && (
-                <span className="pointer-events-none absolute -left-1.5 -top-1.5 grid size-5 place-items-center rounded-full border-2 border-ink bg-bad text-[11px] leading-none text-white">
-                  !
-                </span>
-              )}
             </button>
           );
         })}

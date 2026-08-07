@@ -1,37 +1,137 @@
 @import "tailwindcss";
 
 /*
-  Toybox neo-brutalism: paper background, fat ink borders, hard offset shadows.
-  Goofy enough to be fun, flat enough to stay out of the way of the artwork —
-  the only saturated colour on screen should be the player's own grid.
+  pixe is a measurement page now, not a toy.
+
+  The old system was neo-brutalist: fat ink borders, hard offset shadows, a
+  rounded display face, wobble. That reads as "game", and it fought every number
+  on the board. This one is built from three references:
+
+  - frgmt.xyz, the owner's own site, which is the strongest signal of taste
+    here. Its whole discipline is that there are exactly TWO text colours (ink
+    and muted), ONE family, ONE weight, and 0.8px hairlines. Hierarchy comes
+    from colour and space — never from weight, never from a size jump. Its
+    values are lifted directly below.
+  - datacurve.ai, for the warm near-white page and the small dark-filled /
+    plain-outlined button pair.
+  - DeepSWE, for how a benchmark presents data: borderless tables, tiny
+    letter-spaced uppercase column heads, mono numerics, and only the headline
+    metric in ink while every supporting figure stays grey.
+
+  The rule that follows from all three, and the one to hold on to when adding
+  anything: colour is the hierarchy channel. If something needs emphasis it goes
+  from muted to ink, or it gets space around it. It does not get bolder.
 */
 
-@theme {
-  --color-paper: #fff6e9;
-  --color-paper-2: #ffeed8;
-  --color-ink: #17141f;
-  --color-ink-soft: #4a4358;
-  --color-ink-faint: #8b8397;
-  --color-cloth: #262033;
+/* ------------------------------------------------------------------ */
+/* Runtime tokens                                                      */
+/*                                                                     */
+/* These are plain custom properties rather than `@theme` values so     */
+/* they can be swapped per mode at runtime. `@theme inline` below       */
+/* republishes them as Tailwind utilities, so `text-ink` resolves to    */
+/* `var(--ink)` and follows the theme instead of being frozen at build. */
+/* ------------------------------------------------------------------ */
 
-  --color-pop: #ffce2b;
-  --color-pop-2: #ff5fc0;
-  --color-good: #2fbf6b;
-  --color-bad: #ff3b3b;
+:root {
+  color-scheme: light;
 
-  --font-display: "Fredoka", ui-rounded, "Segoe UI Rounded", system-ui, sans-serif;
-  --font-sans: "Nunito", ui-sans-serif, system-ui, sans-serif;
+  --page: #fafaf7;
+  /* Raised only barely — a card here is a hairline, not a fill. Inputs and
+     the one or two genuinely inset surfaces use it. */
+  --raise: #ffffff;
+  --sunk: #f2f2ee;
 
-  --shadow-chunk: 4px 4px 0 0 var(--color-ink);
-  --shadow-chunk-sm: 2px 2px 0 0 var(--color-ink);
-  --shadow-chunk-lg: 7px 7px 0 0 var(--color-ink);
+  --ink: #17171b;
+  --muted: #63635e;
+
+  /* 0.8px at this value is frgmt's structural line. `--rule` is the visible
+     divider; `--rule-soft` is for chart gridlines, which must sit under the
+     data rather than compete with it. */
+  --rule: #d8d8d1;
+  --rule-soft: #e9e9e4;
+
+  /* The one inverted pair: active segmented controls, primary buttons. */
+  --solid: #17171b;
+  --on-solid: #fafaf7;
+
+  /* Status. Reserved, never reused as a series colour. */
+  --bad: #b4402f;
+  --good: #1a7f5a;
+
+  --hair: 0.8px;
 }
 
-@layer base {
-  * {
-    border-color: var(--color-ink);
+/* The dark set is selected, not inverted — #101011 / #eceae4 / #8d8d86 / #2a2a2c
+   are frgmt's own dark values, which were chosen against a dark surface rather
+   than flipped out of the light ones. */
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --page: #101011;
+    --raise: #17171a;
+    --sunk: #0b0b0c;
+    --ink: #eceae4;
+    --muted: #8d8d86;
+    --rule: #2a2a2c;
+    --rule-soft: #1e1e20;
+    --solid: #eceae4;
+    --on-solid: #101011;
+    --bad: #e08172;
+    --good: #4cbd91;
   }
+}
 
+/* An explicit stamp has to win in both directions, including over the media
+   query above, so it is written out rather than folded into it. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #101011;
+  --raise: #17171a;
+  --sunk: #0b0b0c;
+  --ink: #eceae4;
+  --muted: #8d8d86;
+  --rule: #2a2a2c;
+  --rule-soft: #1e1e20;
+  --solid: #eceae4;
+  --on-solid: #101011;
+  --bad: #e08172;
+  --good: #4cbd91;
+}
+
+@theme inline {
+  --color-page: var(--page);
+  --color-raise: var(--raise);
+  --color-sunk: var(--sunk);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-rule: var(--rule);
+  --color-rule-soft: var(--rule-soft);
+  --color-solid: var(--solid);
+  --color-on-solid: var(--on-solid);
+  --color-bad: var(--bad);
+  --color-good: var(--good);
+
+  /* Inter if the reader happens to have it, system grotesque otherwise. This
+     is frgmt's exact declaration, and nothing is fetched for it — index.html
+     loads no webfont at all. */
+  --font-sans:
+    Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  /* Numbers wear mono everywhere on the bench, which is the single strongest
+     thing DeepSWE does: it makes a column of figures scan as data. */
+  --font-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+  /* `font-display` survives only as an alias, so that anything still asking
+     for it renders in the one family rather than falling back to a serif. */
+  --font-display: var(--font-sans);
+}
+
+/* ------------------------------------------------------------------ */
+/* Base                                                                */
+/* ------------------------------------------------------------------ */
+
+@layer base {
   html,
   body,
   #root {
@@ -39,34 +139,41 @@
   }
 
   body {
-    background-color: var(--color-paper);
-    /* Faint dot grid — a nod to the pixel canvas without competing with it. */
-    background-image: radial-gradient(circle at 1px 1px, rgba(23, 20, 31, 0.07) 1px, transparent 0);
-    background-size: 22px 22px;
-    color: var(--color-ink);
+    background-color: var(--page);
+    color: var(--ink);
     font-family: var(--font-sans);
-    font-weight: 600;
+    /* 13px / 400 / slightly negative tracking, straight off frgmt. The whole
+       system is small; emphasis is bought with colour, so there is no need to
+       leave headroom above the body size. */
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 1.62;
+    letter-spacing: -0.003em;
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
     overscroll-behavior: none;
   }
 
+  /* Headings inherit weight 400 deliberately. The old system had a display
+     face at 600; this one distinguishes a heading by size and by the space
+     around it, and nothing else. */
   h1,
   h2,
   h3,
-  .font-display {
-    font-family: var(--font-display);
-    font-weight: 600;
-    letter-spacing: -0.01em;
+  h4 {
+    font-weight: 400;
+    letter-spacing: -0.014em;
+    line-height: 1.28;
   }
 
   ::selection {
-    background: var(--color-pop);
-    color: var(--color-ink);
+    background: var(--ink);
+    color: var(--page);
   }
 
-  /* Keyboard users get a loud focus ring; mouse users never see it. */
+  /* Quiet, but unmistakably present. The old ring was 3px of hot pink. */
   :focus-visible {
-    outline: 3px solid var(--color-pop-2);
+    outline: 1px solid var(--ink);
     outline-offset: 2px;
   }
 
@@ -76,28 +183,94 @@
   button:disabled {
     cursor: not-allowed;
   }
+
+  /* Tabular by default anywhere a number is set in mono, so columns line up
+     without every call site remembering to ask. */
+  code,
+  kbd,
+  pre {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
 }
 
+/* ------------------------------------------------------------------ */
+/* Type scale                                                          */
+/*                                                                     */
+/* Six steps, and that is the whole scale. Named by role so a component  */
+/* asks for "the column header size" rather than picking px.            */
+/* ------------------------------------------------------------------ */
+
 @layer utilities {
-  .ink-border {
-    border-width: 3px;
-    border-color: var(--color-ink);
+  /* Page title. frgmt's h1: 29px, -0.021em, 1.24. */
+  .t-display {
+    font-size: 29px;
+    line-height: 1.24;
+    letter-spacing: -0.021em;
+    font-weight: 400;
   }
 
-  /* The press-down affordance every chunky control shares. */
-  .chunk {
-    box-shadow: var(--shadow-chunk);
-    transition:
-      transform 90ms cubic-bezier(0.34, 1.56, 0.64, 1),
-      box-shadow 90ms ease;
+  /* Section heading. */
+  .t-title {
+    font-size: 18px;
+    line-height: 1.3;
+    letter-spacing: -0.016em;
+    font-weight: 400;
   }
-  .chunk:hover:not(:disabled) {
-    transform: translate(-1px, -1px);
-    box-shadow: 5px 5px 0 0 var(--color-ink);
+
+  /* Sub-heading, and the largest a number gets outside the hero. */
+  .t-lead {
+    font-size: 15px;
+    line-height: 1.45;
+    letter-spacing: -0.01em;
+    font-weight: 400;
   }
-  .chunk:active:not(:disabled) {
-    transform: translate(3px, 3px);
-    box-shadow: 1px 1px 0 0 var(--color-ink);
+
+  .t-body {
+    font-size: 13px;
+    line-height: 1.62;
+    letter-spacing: -0.003em;
+  }
+
+  .t-small {
+    font-size: 12px;
+    line-height: 1.5;
+    letter-spacing: 0;
+  }
+
+  /* Column headers and eyebrow labels. The one place uppercase is allowed,
+     because at 10px with open tracking it reads as a label rather than as
+     shouting — this is DeepSWE's table head exactly. */
+  .t-micro {
+    font-size: 10px;
+    line-height: 1.4;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    font-weight: 400;
+  }
+
+  /* Every figure on the bench. */
+  .t-num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+
+  /* ---------------- structure ---------------- */
+
+  /* The hairline. Named rather than spelled out at each call site so the one
+     value can move. */
+  .rule-t {
+    border-top: var(--hair) solid var(--rule);
+  }
+  .rule-b {
+    border-bottom: var(--hair) solid var(--rule);
+  }
+  .rule-l {
+    border-left: var(--hair) solid var(--rule);
+  }
+  .rule-all {
+    border: var(--hair) solid var(--rule);
   }
 
   .pixelated {
@@ -107,67 +280,54 @@
 
   .scrollbar-slim {
     scrollbar-width: thin;
-    scrollbar-color: var(--color-ink-faint) transparent;
+    scrollbar-color: var(--rule) transparent;
+  }
+
+  /* A table that must not push the page sideways. The container scrolls; the
+     page does not. Paired with a fading edge so a cut-off column reads as
+     "there is more" rather than as a rendering fault. */
+  .table-scroll {
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
   }
 }
 
-/* ---------------- animations ---------------- */
+/* ------------------------------------------------------------------ */
+/* Motion                                                              */
+/*                                                                     */
+/* Almost all of it is gone. What is left is one entrance and the two   */
+/* animations that carry game information rather than decoration.       */
+/* ------------------------------------------------------------------ */
 
-@keyframes wobble {
-  0%,
-  100% {
-    transform: rotate(-2.5deg);
-  }
-  50% {
-    transform: rotate(2.5deg);
-  }
-}
-.animate-wobble {
-  animation: wobble 2.4s ease-in-out infinite;
-}
+/*
+  The palette swatch buzz. This is NOT decoration and must not be tuned away:
+  counting laws (quotas, per-row limits) have no guilty cell to light up, so the
+  swatch is their only feedback channel. `shared/engine.test.ts` asserts that no
+  failing law is ever invisible, and this is half of how that holds.
 
-/* Used by a palette swatch when a counting rule involving it is unsatisfied.
-   This is the only channel those rules have — see RuleEval.hue. */
+  Toned down from the old ±4deg/±3px flail to a small, fast shiver — still
+  unmistakable in peripheral vision, no longer slapstick.
+*/
 @keyframes swatch-buzz {
   0%,
   100% {
-    transform: translateX(0) rotate(0deg);
+    transform: translateX(0);
   }
-  20% {
-    transform: translateX(-3px) rotate(-4deg);
+  25% {
+    transform: translateX(-1.5px);
   }
-  40% {
-    transform: translateX(3px) rotate(4deg);
-  }
-  60% {
-    transform: translateX(-2px) rotate(-2deg);
-  }
-  80% {
-    transform: translateX(2px) rotate(2deg);
+  75% {
+    transform: translateX(1.5px);
   }
 }
 .animate-buzz {
-  animation: swatch-buzz 0.7s ease-in-out infinite;
-}
-
-@keyframes pop-in {
-  from {
-    opacity: 0;
-    transform: scale(0.9) translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1) translateY(0);
-  }
-}
-.animate-pop-in {
-  animation: pop-in 220ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  animation: swatch-buzz 0.32s ease-in-out infinite;
 }
 
 @keyframes rise {
   from {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(4px);
   }
   to {
     opacity: 1;
@@ -175,9 +335,23 @@
   }
 }
 .animate-rise {
-  animation: rise 260ms ease-out both;
+  animation: rise 180ms ease-out both;
 }
 
+/* Dialogs. A fade, not a bounce. */
+@keyframes pop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.animate-pop-in {
+  animation: pop-in 140ms ease-out both;
+}
+
+/* Kept for `Confetti.tsx`, which is outside this pass. */
 @keyframes confetti-fall {
   to {
     transform: translateY(105vh) rotate(var(--spin));
@@ -193,8 +367,12 @@
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
-  /* Keep the buzz legible as a static tilt — it carries real game information. */
+  /* The buzz has to survive as a static offset — it carries real game
+     information, and a reader who suppresses motion still needs to be told
+     which colour is implicated. */
   .animate-buzz {
-    transform: rotate(-4deg);
+    transform: translateX(1.5px);
+    outline: 1.5px solid var(--bad);
+    outline-offset: 1px;
   }
 }

@@ -1,7 +1,6 @@
 import {
   Brush,
   Eraser,
-  FlipHorizontal2,
   Grid3x3,
   PaintBucket,
   Pipette,
@@ -11,7 +10,6 @@ import {
   Undo2,
 } from "lucide-react";
 import type { Mirror, Tool } from "./board";
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 interface Props {
@@ -41,12 +39,18 @@ const TOOLS: { id: Tool; icon: typeof Brush; label: string; hotkey: string }[] =
 const BRUSHES = [1, 2, 4, 8, 16];
 
 const MIRRORS: { id: Mirror; label: string }[] = [
-  { id: "none", label: "Off" },
+  { id: "none", label: "off" },
   { id: "x", label: "◧" },
   { id: "y", label: "⬒" },
   { id: "quad", label: "✚" },
 ];
 
+/**
+ * Every control here is the same object: a hairline cell that fills with ink
+ * when it is the active one. Segmented rather than spaced, which is how both
+ * DeepSWE's chart switches and datacurve's nav read — one border around the
+ * group, one internal hairline between cells, and the selected cell inverted.
+ */
 export function Toolbar({
   tool,
   setTool,
@@ -65,107 +69,128 @@ export function Toolbar({
   return (
     <div className="flex flex-col gap-3">
       <Section label="Tools">
-        <div className="flex flex-wrap gap-1.5">
-          {TOOLS.map((t) => (
-            <Button
-              key={t.id}
-              size="icon-sm"
-              variant={tool === t.id ? "ink" : "secondary"}
-              onClick={() => setTool(t.id)}
-              title={`${t.label} (${t.hotkey})`}
-              aria-label={t.label}
-              aria-pressed={tool === t.id}
-            >
-              <t.icon className="size-4" strokeWidth={2.5} />
-            </Button>
-          ))}
-          <span className="mx-1 w-px self-stretch bg-ink/25" />
-          <Button size="icon-sm" variant="secondary" onClick={onUndo} disabled={!canUndo} title="Undo (⌘Z)" aria-label="Undo">
-            <Undo2 className="size-4" strokeWidth={2.5} />
-          </Button>
-          <Button size="icon-sm" variant="secondary" onClick={onRedo} disabled={!canRedo} title="Redo (⇧⌘Z)" aria-label="Redo">
-            <Redo2 className="size-4" strokeWidth={2.5} />
-          </Button>
-          <Button size="icon-sm" variant="secondary" onClick={onClear} title="Wipe the canvas" aria-label="Wipe the canvas">
-            <Trash2 className="size-4" strokeWidth={2.5} />
-          </Button>
+        <div className="flex items-center gap-2">
+          <Segmented>
+            {TOOLS.map((t) => (
+              <Cell
+                key={t.id}
+                on={tool === t.id}
+                onClick={() => setTool(t.id)}
+                title={`${t.label} (${t.hotkey})`}
+                aria-label={t.label}
+                aria-pressed={tool === t.id}
+              >
+                <t.icon className="size-3.5" strokeWidth={1.75} />
+              </Cell>
+            ))}
+          </Segmented>
+
+          <Segmented>
+            <Cell on={false} onClick={onUndo} disabled={!canUndo} title="Undo (⌘Z)" aria-label="Undo">
+              <Undo2 className="size-3.5" strokeWidth={1.75} />
+            </Cell>
+            <Cell on={false} onClick={onRedo} disabled={!canRedo} title="Redo (⇧⌘Z)" aria-label="Redo">
+              <Redo2 className="size-3.5" strokeWidth={1.75} />
+            </Cell>
+            {/* `Wipe the canvas` is a documented seam — the reference solver
+                finds this button by that exact aria-label. */}
+            <Cell on={false} onClick={onClear} title="Wipe the canvas" aria-label="Wipe the canvas">
+              <Trash2 className="size-3.5" strokeWidth={1.75} />
+            </Cell>
+          </Segmented>
         </div>
       </Section>
 
       <Section label="Brush size">
-        <div className="flex gap-1.5">
+        <Segmented full>
           {BRUSHES.map((n) => (
-            <button
-              key={n}
-              type="button"
-              onClick={() => setBrush(n)}
-              aria-pressed={brush === n}
-              title={`${n}×${n}`}
-              className={cn(
-                "h-8 flex-1 rounded-lg ink-border font-display text-xs shadow-chunk-sm transition-transform hover:-translate-y-0.5",
-                brush === n ? "bg-ink text-paper" : "bg-paper text-ink",
-              )}
-            >
-              {n}
-            </button>
+            <Cell key={n} on={brush === n} onClick={() => setBrush(n)} title={`${n}×${n}`} grow>
+              <span className="t-num text-[11px]">{n}</span>
+            </Cell>
           ))}
-        </div>
+        </Segmented>
       </Section>
 
       <div className="grid grid-cols-2 gap-3">
-        <Section label="Mirror" hint={<FlipHorizontal2 className="size-3.5" strokeWidth={2.5} />}>
-          <div className="flex gap-1.5">
+        <Section label="Mirror">
+          <Segmented full>
             {MIRRORS.map((m) => (
-              <button
+              <Cell
                 key={m.id}
-                type="button"
+                on={mirror === m.id}
                 onClick={() => setMirror(m.id)}
-                aria-pressed={mirror === m.id}
                 title={`Mirror: ${m.label}`}
-                className={cn(
-                  "h-8 flex-1 rounded-lg ink-border font-display text-xs shadow-chunk-sm transition-transform hover:-translate-y-0.5",
-                  mirror === m.id ? "bg-ink text-paper" : "bg-paper text-ink",
-                )}
+                aria-pressed={mirror === m.id}
+                grow
               >
-                {m.label}
-              </button>
+                <span className="text-[11px]">{m.label}</span>
+              </Cell>
             ))}
-          </div>
+          </Segmented>
         </Section>
 
-        <Section label="Guides" hint={<Grid3x3 className="size-3.5" strokeWidth={2.5} />}>
-          <button
-            type="button"
-            onClick={() => setShowGrid(!showGrid)}
-            aria-pressed={showGrid}
-            className={cn(
-              "h-8 w-full rounded-lg ink-border font-display text-xs shadow-chunk-sm transition-transform hover:-translate-y-0.5",
-              showGrid ? "bg-ink text-paper" : "bg-paper text-ink",
-            )}
-          >
-            {showGrid ? "8×8 grid on" : "8×8 grid off"}
-          </button>
+        <Section label="Guides">
+          <Segmented full>
+            <Cell
+              on={showGrid}
+              onClick={() => setShowGrid(!showGrid)}
+              aria-pressed={showGrid}
+              title="8×8 guide grid"
+              grow
+            >
+              <Grid3x3 className="size-3.5" strokeWidth={1.75} />
+              <span className="text-[11px]">8×8</span>
+            </Cell>
+          </Segmented>
         </Section>
       </div>
     </div>
   );
 }
 
-function Section({
-  label,
-  hint,
+function Segmented({ children, full }: { children: React.ReactNode; full?: boolean }) {
+  return (
+    <div
+      className={cn(
+        "flex overflow-hidden rounded-[4px] rule-all",
+        // One internal hairline between cells, never a doubled border.
+        "[&>button:not(:first-child)]:rule-l",
+        full && "w-full",
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
+function Cell({
+  on,
+  grow,
   children,
-}: {
-  label: string;
-  hint?: React.ReactNode;
-  children: React.ReactNode;
-}) {
+  className,
+  ...props
+}: React.ComponentProps<"button"> & { on: boolean; grow?: boolean }) {
+  return (
+    <button
+      type="button"
+      className={cn(
+        "flex h-7 min-w-7 items-center justify-center gap-1 px-1.5 transition-colors",
+        on ? "bg-solid text-on-solid" : "text-muted hover:bg-sunk hover:text-ink",
+        "disabled:opacity-35 disabled:hover:bg-transparent",
+        grow && "flex-1",
+        className,
+      )}
+      {...props}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Section({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <h2 className="mb-1.5 flex items-center gap-1 font-display text-sm uppercase tracking-wide text-ink-soft">
-        {label}
-        {hint}
-      </h2>
+      <h2 className="t-micro mb-1.5 text-muted">{label}</h2>
       {children}
     </div>
   );

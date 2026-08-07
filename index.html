@@ -3,19 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>pixe — fill the grid, nobody tells you how</title>
+    <title>pixe — an agent benchmark</title>
     <meta
       name="description"
-      content="A 64x64 pixel puzzle where every board hides its own colour laws. Nobody tells you the rules. Paint, get buzzed at, work it out, share the art."
+      content="A 64x64 pixel puzzle where every board hides its own colour laws, run as a benchmark for browser-driving agents. Time, probes and solve validity are measured; nobody is told the rules."
     />
-    <meta name="theme-color" content="#fff6e9" />
+    <!-- Both values track `--paper` in src/index.css. Kept in sync by hand, and
+         wrong here only costs a mismatched browser chrome strip on mobile. -->
+    <meta name="theme-color" content="#fafaf7" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#101011" media="(prefers-color-scheme: dark)" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='8' height='8' fill='%23ff4d4d'/%3E%3Crect x='8' width='8' height='8' fill='%23ffdd3c'/%3E%3Crect y='8' width='8' height='8' fill='%234a86ff'/%3E%3Crect x='8' y='8' width='8' height='8' fill='%234fd76a'/%3E%3C/svg%3E" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Nunito:wght@600;700;800&display=swap"
-      rel="stylesheet"
-    />
+    <!-- No webfont. The redesign is a single system grotesque at one weight, so
+         the two Google Fonts families that used to load here were three network
+         round trips buying nothing — and on a page whose headline metric is
+         wall clock, a render-blocking stylesheet from another origin is a
+         particularly poor trade. -->
   </head>
   <body>
     <div id="root"></div>
