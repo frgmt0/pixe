@@ -137,7 +137,7 @@ describe("ranking", () => {
         byId.get("grinder")!.effective_ms_per_solve,
       );
       expect(rows[0]!.run_id).toBe("grinder");
-      expect(rows[0]!.projected_1m_hours).toBeLessThan(rows[1]!.projected_1m_hours);
+      expect(rows[0]!.projected_500_hours).toBeLessThan(rows[1]!.projected_500_hours);
     });
   });
 
@@ -168,7 +168,7 @@ describe("declared fields", () => {
     const row = summariseFromPoints(run("r"), [solve("r", 0, 1_000)], [])!;
     expect(row.tokens_per_solve).toBeNull();
     expect(row.cost_per_solve_micro).toBeNull();
-    expect(row.projected_1m_cost_usd).toBeNull();
+    expect(row.projected_500_cost_usd).toBeNull();
   });
 });
 
@@ -193,6 +193,20 @@ describe("grouping — one row per (model, provider)", () => {
     const rows = await group([a, b], solves);
     expect(rows.length).toBe(1);
     expect(rows[0]!.runs).toBe(2);
+  });
+
+  test("complete is true only once the representative has banked all 500 rungs", async () => {
+    const partial = run("partial", { model: "gpt-x", provider: "openai" });
+    const full = run("full", { model: "gpt-x", provider: "azure" });
+    const solves = [
+      solve("partial", 0, 1_000),
+      ...Array.from({ length: 500 }, (_, i) => solve("full", i, 1_000)),
+    ];
+    const rows = await group([partial, full], solves);
+    const byId = new Map(rows.map((r) => [r.run_id, r]));
+    expect(byId.get("partial")!.complete).toBe(false);
+    expect(byId.get("full")!.complete).toBe(true);
+    expect(byId.get("full")!.solves).toBe(500);
   });
 
   test("same model, different provider, stays two rows", async () => {

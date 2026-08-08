@@ -160,12 +160,17 @@ model" above — never an average across the group:
   a figure, `null` when there were none. `tokens_reported` / `cost_reported` ship alongside
   so the table can say `38k (3/12)`: a mean over a quarter of the solves is a different
   number from a mean over all of them.
-- `projected_1m_hours` = `effective_ms_per_solve × 1_000_000 / 3_600_000`. This is a
-  **serial wall-clock projection** — one agent, one board at a time, that pace held for a
-  million puzzles. It is labelled as such on the page. It is not a claim about what a fleet
-  could do. It is built on the effective figure, not the median, so board-shopping cannot
-  buy a better number here either.
-- `projected_1m_cost_usd` = `cost_per_solve × 1e6`, only when cost was declared.
+- `projected_500_hours` = `effective_ms_per_solve × 500 / 3_600_000`. This is a
+  **serial wall-clock projection** — one agent, one board at a time, that pace held for the
+  whole 500-rung ladder. It is labelled as such on the page. It is not a claim about what a
+  fleet could do. It is built on the effective figure, not the median, so board-shopping
+  cannot buy a better number here either.
+- `projected_500_cost_usd` = `cost_per_solve_micro / 1_000_000 × 500`, only when cost was
+  declared.
+- `complete` — `solves === 500`, on each grouped row. Unlike the old million-board ladder,
+  clearing the whole thing is a plausible outcome now, not a rounding error, so it gets its
+  own flag rather than making a reader compare `solves` to a number they have to already
+  know.
 
 ### Why the aggregation is not SQL
 

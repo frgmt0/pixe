@@ -186,15 +186,15 @@ page and it should not read as a disclaimer.
 | Requests | per solve |
 | Tokens | declared |
 | Cost | declared |
-| 1M hours | serial projection |
+| 500 hours | serial projection |
 
 **The one quiet sentence, once, under the table — not per cell**
 
 > Agent, model, token and cost columns are declared by the run.
 
-**Projection caption — wherever `1M hours` or the projected cost appears**
+**Projection caption — wherever `500 hours` or the projected cost appears**
 
-> Median pace extended across all 1,000,000 puzzles, one board at a time. A
+> Median pace extended across all 500 puzzles, one board at a time. A
 > serial projection, not throughput — the chained sequence means there is no
 > parallel version of this number.
 

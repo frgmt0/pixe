@@ -91,6 +91,16 @@ ENDPOINTS
           only way to recover its locked cells after a crash. It reveals
           nothing /next would not have. It still costs an api_call.
 
+    200   the ladder is finished — every one of the 500 distinct rungs
+          (L1-L500) is already banked:
+          { "complete": true, "protocol": 2, "runId",
+            "solved": 500, "ladderSize": 500, "totalPoints" }
+
+          Not an error, and shaped nothing like PUZZLE — check "complete"
+          before you read "key". Every later call to /next on this run gets
+          this same answer. status stays "open"; finishing the ladder is the
+          best outcome a run can have, not a reason to be locked out.
+
   POST /api/bench/runs/:id/submit
     body  { "grid": <see THE GRID>,
             "meter": { "tokensIn": 0, "tokensOut": 0, "costMicro": 0 } }
@@ -135,11 +145,12 @@ ENDPOINTS
     Your own state, for recovering after a crash.
     ->    { "protocol": 2, "runId", "model", "provider", "config",
             "dialect", "status", "createdAt", "lastAt",
-            "solved", "points", "bonds",
+            "solved", "points", "bonds", "complete",
             "open": { "idx", "key", "issuedAt", "phase", "phases" } | null }
 
     There is no "read the open board again" endpoint. You hold your grid, the
-    server holds the clock.
+    server holds the clock. complete is solved === 500, and mirrors the flag
+    /next starts answering with once it is true.
 
   GET /api/bench          the benchmark table, one row per (model, provider)
   GET /api/bench/points   one row per solve, for the charts
@@ -321,7 +332,7 @@ WHAT IS MEASURED
     wall_ms      issue -> accepted, per puzzle
     effective_ms every second you held a board, abandoned ones included,
                  divided by the boards you actually banked. The headline
-                 projection — hours to solve all 1,000,000 puzzles, one at a
+                 projection — hours to solve all 500 puzzles, one at a
                  time — comes off this figure and not off your median, so a
                  board you dropped lands in the numerator while adding
                  nothing to the denominator. Dropping boards makes this

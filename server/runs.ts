@@ -37,6 +37,7 @@ import {
   runCookie,
   runTokenFrom,
   type AbandonResult,
+  type LadderComplete,
   type PuzzleIssued,
   type RunRegistered,
   type RunState,
@@ -57,9 +58,6 @@ export interface RunDeps {
    *  has none configured. See `isVerifiedRequest`. */
   verifiedKey: string | undefined;
 }
-
-/** The width of the ladder, defined once in `shared/generate.ts`. */
-const LADDER_MAX = LADDER_SIZE;
 
 /**
  * Submitting is the feedback oracle, so it gets a budget. Generous for real
@@ -191,7 +189,7 @@ const noRun = () =>
  * that picks within it is not.
  */
 export function bandFor(idx: number): { lo: number; hi: number } {
-  const L = LADDER_MAX;
+  const L = LADDER_SIZE;
   if (idx <= 0) return { lo: 1, hi: Math.max(3, Math.round(L * 0.006)) };
   if (idx <= 2) return { lo: 4, hi: Math.max(10, Math.round(L * 0.02)) };
   if (idx <= 5) return { lo: 11, hi: Math.max(25, Math.round(L * 0.05)) };
@@ -263,7 +261,10 @@ export async function nextKey(store: Store, run: RunRow, idx: number): Promise<s
   }
   // 64 collisions in a row means the band is exhausted, which only happens to a
   // run that has banked every key in it. Widen past the band rather than fail.
-  return `L${26 + ((idx * 7919) % (LADDER_MAX - 26))}`;
+  // `postNext` checks for a fully-banked ladder before ever calling this, so
+  // reaching here still means there is at least one unbanked key somewhere in
+  // 1..LADDER_SIZE — just not one this narrow scan happened to land on.
+  return `L${26 + ((idx * 7919) % (LADDER_SIZE - 26))}`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -478,6 +479,18 @@ export async function postRun(req: Request, _url: URL, deps: RunDeps): Promise<R
   return json(body, { status: 201, headers: { "set-cookie": runCookie(token, secure) } });
 }
 
+/**
+ * Distinct rungs this run has banked. Not `solves.length` — the field a
+ * `RunSolveRow` array normally counts by — because it is the *ladder
+ * position*, not the row count, that the completion check and `RunState`
+ * both care about: two solves could in principle name the same `puzzle_key`
+ * (the collision fallback in `nextKey` does not itself guard against that),
+ * and a run cannot have "banked all 500 rungs" by solving the same one twice.
+ */
+function bankedKeyCount(solves: readonly { puzzle_key: string }[]): number {
+  return new Set(solves.map((s) => s.puzzle_key)).size;
+}
+
 /** `GET /api/bench/runs/:id` — who am I and how far along. */
 export async function getRun(req: Request, id: string, deps: RunDeps): Promise<Response> {
   const authed = await runForPath(deps.store, req, id);
@@ -501,6 +514,7 @@ export async function getRun(req: Request, id: string, deps: RunDeps): Promise<R
     solved: solves.length,
     points: solves.reduce((s, r) => s + r.points, 0),
     bonds: solves.reduce((s, r) => s + r.bonds, 0),
+    complete: bankedKeyCount(solves) >= LADDER_SIZE,
     open: open
       ? {
           idx: open.idx,
@@ -526,6 +540,14 @@ export async function getRun(req: Request, id: string, deps: RunDeps): Promise<R
  * board answers `409` naming the rung. Dropping it is `/abandon`, which is a
  * separate request precisely so that walking away is a decision rather than a
  * side effect of asking for work.
+ *
+ * Once a run has banked all `LADDER_SIZE` distinct rungs there is nothing left
+ * to derive, so this answers `LadderComplete` instead — a plain `200`, every
+ * time it is asked again, rather than manufacturing a puzzle that does not
+ * exist or answering with an error that would make a finished run look
+ * abandoned. The run's `status` stays `"open"`: finishing the ladder is not a
+ * reason to lock the run out of `GET .../:id` or the gallery, and `run_closed`
+ * is reserved for the unrelated case of a run actually being closed or voided.
  */
 export async function postNext(req: Request, id: string, deps: RunDeps): Promise<Response> {
   const { store } = deps;
@@ -554,6 +576,20 @@ export async function postNext(req: Request, id: string, deps: RunDeps): Promise
       },
       { status: 409 },
     );
+  }
+
+  const solves = await store.runSolves(run.id);
+  const banked = bankedKeyCount(solves);
+  if (banked >= LADDER_SIZE) {
+    const body: LadderComplete = {
+      complete: true,
+      protocol: PROTOCOL_VERSION,
+      runId: run.id,
+      solved: banked,
+      ladderSize: LADDER_SIZE,
+      totalPoints: solves.reduce((s, r) => s + r.points, 0),
+    };
+    return json(body);
   }
 
   const idx = await store.nextIdx(run.id);

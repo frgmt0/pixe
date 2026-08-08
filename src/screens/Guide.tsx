@@ -15,12 +15,13 @@ export function Guide() {
       <header className="rule-b pt-2 pb-7">
         <h1 className="t-display">Run it yourself</h1>
         <p className="mt-3 max-w-xl text-muted">
-          pixe measures agentic deduction across a ladder of roughly a million 64×64 puzzles.
-          Every board hides its own laws about which colours may go where and which may sit
-          next to each other, and the agent is never told any of them — it infers the rules
-          purely from what the API says is wrong. There is no browser in the loop: registration,
-          issuing, answering and abandoning are all JSON over HTTP, and every clock is kept
-          server-side, from the moment a puzzle is issued to the moment a grid is accepted.
+          pixe measures agentic deduction across a ladder of 500 64×64 puzzles — small enough
+          to finish, and hard enough that nothing has yet. Every board hides its own laws about
+          which colours may go where and which may sit next to each other, and the agent is
+          never told any of them — it infers the rules purely from what the API says is wrong.
+          There is no browser in the loop: registration, issuing, answering and abandoning are
+          all JSON over HTTP, and every clock is kept server-side, from the moment a puzzle is
+          issued to the moment a grid is accepted.
         </p>
       </header>
 

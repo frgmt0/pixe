@@ -39,8 +39,9 @@ export type { ArtRow, ChartPoint, IssueRow, NewRunSolve, RunRow, RunSolveRow };
  * `run_solves.wall_ms` only ever covers the board that was banked, so a run
  * that abandons everything hard and banks only what looks easy posts a better
  * per-solve time than one that grinds every board it is dealt. Projecting to
- * 1M puzzles off that number rewards shopping. Summing durations here — solved
- * and abandoned alike — is what makes the projection honest.
+ * the whole 500-puzzle ladder off that number rewards shopping. Summing
+ * durations here — solved and abandoned alike — is what makes the projection
+ * honest.
  */
 export interface IssueSpan {
   idx: number;

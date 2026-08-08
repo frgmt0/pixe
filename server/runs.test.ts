@@ -88,6 +88,27 @@ describe("the chained sequence", () => {
       expect(n).toBeLessThanOrEqual(hi);
     }
   });
+
+  /**
+   * The cap at the top of the ladder, isolated from everything that walking a
+   * run to L500 for real would also exercise. `bandFor`'s `hi` is
+   * `Math.min(L, ...)`, so this is the one place that guarantees the chain can
+   * never hand out `L501` no matter how far a run's `idx` climbs — a run stuck
+   * mid-collision (the 64-bump loop in `nextKey`) reaches for `idx` values far
+   * past where a real run would ever be.
+   */
+  test("the derived key never crosses L500, arbitrarily far into the chain", async () => {
+    for (const idx of [499, 500, 501, 999, 5000]) {
+      const key = await nextKey(storeWith([]), RUN, idx);
+      const n = ladderIndex(key)!;
+      expect(n).toBeGreaterThanOrEqual(1);
+      expect(n).toBeLessThanOrEqual(LADDER_SIZE);
+    }
+    // `bandFor` itself: the ceiling reaches and then sticks at exactly 500,
+    // never drifting past it as `idx` keeps growing.
+    expect(bandFor(499).hi).toBe(LADDER_SIZE);
+    expect(bandFor(5000).hi).toBe(LADDER_SIZE);
+  });
 });
 
 describe("the difficulty band", () => {

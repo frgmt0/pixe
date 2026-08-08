@@ -2,15 +2,19 @@ import { describe, expect, test } from "bun:test";
 import {
   extent,
   fitAt,
-  fmtSeconds,
+  fmtDuration,
+  fmtDurationLong,
   fmtUsd,
   groupByRun,
   leastSquares,
   niceTicks,
   padExtent,
   solveTokens,
+  toBenchRow,
+  tpsOf,
   type BenchPoint,
 } from "./bench";
+import type { BenchGroupRow } from "../../shared/protocol";
 
 const close = (a: number, b: number, eps = 1e-9) => expect(Math.abs(a - b)).toBeLessThan(eps);
 
@@ -114,10 +118,20 @@ describe("axis helpers", () => {
 });
 
 describe("formatting", () => {
-  test("seconds pick a readable unit", () => {
-    expect(fmtSeconds(4200)).toBe("4.2s");
-    expect(fmtSeconds(45_000)).toBe("45s");
-    expect(fmtSeconds(900_000)).toBe("15.0m");
+  test("fmtDuration picks a readable solve-scale unit", () => {
+    expect(fmtDuration(4200)).toBe("4.2s");
+    expect(fmtDuration(45_000)).toBe("45s");
+    expect(fmtDuration(65_000)).toBe("1m 05s");
+    expect(fmtDuration(900_000)).toBe("15m 00s");
+    expect(fmtDuration(7_384_000)).toBe("2h 03m");
+  });
+
+  test("fmtDurationLong picks a readable ladder-scale unit", () => {
+    expect(fmtDurationLong(6)).toBe("6.0h");
+    expect(fmtDurationLong(34)).toBe("34h");
+    expect(fmtDurationLong(74)).toBe("3d 2h");
+    expect(fmtDurationLong(72)).toBe("3d");
+    expect(fmtDurationLong(24 * 400)).toBe("1.1y");
   });
 
   test("usd keeps small figures from rounding to zero", () => {
@@ -129,6 +143,77 @@ describe("formatting", () => {
   test("a negative slope reads as −$0.27, not $−0.27", () => {
     expect(fmtUsd(-0.27)).toBe("−$0.270");
     expect(fmtUsd(0)).toBe("$0");
+  });
+});
+
+describe("toBenchRow", () => {
+  const wire = (over: Partial<BenchGroupRow> = {}): BenchGroupRow => ({
+    model: "FAKE-kestrel",
+    provider: "fake-labs",
+    verified: false,
+    runs: 1,
+    verifiedRuns: 0,
+    solves: 58,
+    complete: false,
+    totalPoints: 400,
+    effective_ms_per_solve: 60_000,
+    median_wall_ms: 55_000,
+    probes_per_solve: 2,
+    abandoned: 1,
+    abandon_rate: 0.02,
+    tokensIn: 1000,
+    tokensOut: 500,
+    costMicro: 9000,
+    config: null,
+    maxRung: 59,
+    run_id: "r1",
+    first_at: 0,
+    last_at: 1,
+    ...over,
+  });
+
+  test("computes the projection client-side, since the grouped wire row never carries it", () => {
+    const row = toBenchRow(wire(), 500);
+    expect(row.projected_500_hours).toBeCloseTo((60_000 * 500) / 3_600_000, 9);
+  });
+
+  test("prefers a server-sent projection once one ships", () => {
+    const raw = wire() as BenchGroupRow & { projected_500_hours: number };
+    raw.projected_500_hours = 12.5;
+    expect(toBenchRow(raw, 500).projected_500_hours).toBe(12.5);
+  });
+
+  test("passes the server's own `complete` straight through", () => {
+    expect(toBenchRow(wire({ solves: 500, complete: true }), 500).complete).toBe(true);
+    expect(toBenchRow(wire({ solves: 58, complete: false }), 500).complete).toBe(false);
+  });
+
+  test("falls back to inferring `complete` from `solves` if a stale response omits it", () => {
+    // Simulates JSON crossing the wire from a server that predates the field —
+    // a real runtime shape the compile-time `BenchGroupRow` type cannot express.
+    const stale = { ...wire({ solves: 500 }) } as Record<string, unknown>;
+    delete stale.complete;
+    expect(toBenchRow(stale as unknown as BenchGroupRow, 500).complete).toBe(true);
+
+    const staleShort = { ...wire({ solves: 499 }) } as Record<string, unknown>;
+    delete staleShort.complete;
+    expect(toBenchRow(staleShort as unknown as BenchGroupRow, 500).complete).toBe(false);
+  });
+});
+
+describe("tpsOf", () => {
+  test("declared tokens out over measured solve time", () => {
+    // 58 solves at 60s effective = 3480s; 5000 tokens out / 3480s.
+    const tps = tpsOf({ tokensOut: 5000, solves: 58, effective_ms_per_solve: 60_000 });
+    expect(tps).toBeCloseTo(5000 / 3480, 9);
+  });
+
+  test("blank, not zero, when tokens out was never declared", () => {
+    expect(tpsOf({ tokensOut: null, solves: 58, effective_ms_per_solve: 60_000 })).toBeNull();
+  });
+
+  test("blank when there is nothing to divide by", () => {
+    expect(tpsOf({ tokensOut: 100, solves: 0, effective_ms_per_solve: 60_000 })).toBeNull();
   });
 });
 

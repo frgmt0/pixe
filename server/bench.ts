@@ -16,14 +16,15 @@
  * arithmetic happens above them.
  */
 
+import { LADDER_SIZE } from "../shared/generate";
 import {
   byEffectiveTime,
   byGroupProgress,
   byProgress,
   median,
   percentile,
-  projected1mCostUsd,
-  projected1mHours,
+  projected500CostUsd,
+  projected500Hours,
   PUZZLE_UNIVERSE,
   type BenchGroupRow,
   type BenchRow as WireBenchRow,
@@ -192,9 +193,9 @@ export function summariseFromPoints(
 
     // Projected from the effective figure, not the median, so board-shopping
     // cannot buy a better number here.
-    projected_1m_hours: projected1mHours(effectiveMs),
-    projected_1m_cost_usd:
-      costPerSolveMicro === null ? null : projected1mCostUsd(costPerSolveMicro),
+    projected_500_hours: projected500Hours(effectiveMs),
+    projected_500_cost_usd:
+      costPerSolveMicro === null ? null : projected500CostUsd(costPerSolveMicro),
 
     first_at: run.created_at,
     last_at: run.last_at,
@@ -351,6 +352,7 @@ export function buildBenchGroups(
         verifiedRuns: verifiedMembers.length,
 
         solves: rep.solved,
+        complete: rep.solved === LADDER_SIZE,
         totalPoints: rep.points,
 
         effective_ms_per_solve: rep.effective_ms_per_solve,

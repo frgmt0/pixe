@@ -26,6 +26,7 @@
  */
 
 import { decodeGrid, encodeGrid } from "./codec";
+import { LADDER_SIZE } from "./generate";
 import { CELLS, EMPTY, GRID, HUES, hueName } from "./palette";
 import { emptyGrid, type Grid } from "./rules";
 
@@ -36,8 +37,10 @@ import { emptyGrid, type Grid } from "./rules";
  *  puzzles are issued and answered as JSON under `/api/bench/runs`. */
 export const PROTOCOL_VERSION = 2;
 
-/** The whole point of the projection columns: how many boards exist. */
-export const PUZZLE_UNIVERSE = 1_000_000;
+/** The whole point of the projection columns: how many boards exist. Sourced
+ *  from `LADDER_SIZE` rather than restated, so the ladder has exactly one
+ *  width in the whole codebase. */
+export const PUZZLE_UNIVERSE = LADDER_SIZE;
 
 const MS_PER_HOUR = 3_600_000;
 
@@ -216,8 +219,8 @@ export interface BenchRow {
   cost_reported: number;
 
   /** Serial wall-clock projection over the whole puzzle space. Not throughput. */
-  projected_1m_hours: number;
-  projected_1m_cost_usd: number | null;
+  projected_500_hours: number;
+  projected_500_cost_usd: number | null;
 
   first_at: number;
   last_at: number;
@@ -261,6 +264,11 @@ export interface BenchGroupRow {
   /** The representative's rungs banked, out of the fixed `LADDER_SIZE` (500)
    *  total distinct keys — the headline column. */
   solves: number;
+  /** `solves === LADDER_SIZE`. Unlike the old million-board ladder, clearing
+   *  the whole thing is a plausible outcome now, so it gets its own flag
+   *  rather than making a reader compare `solves` to a number they have to
+   *  already know. */
+  complete: boolean;
   totalPoints: number;
 
   effective_ms_per_solve: number;
@@ -514,6 +522,9 @@ export interface RunState {
   solved: number;
   points: number;
   bonds: number;
+  /** `solved === LADDER_SIZE` — every distinct rung banked. Mirrors the
+   *  `complete` flag `POST .../next` starts returning once this is true. */
+  complete: boolean;
   /** The single open rung, or null when the run is between puzzles. */
   open: { idx: number; key: string; issuedAt: number; phase: number; phases: number } | null;
 }
@@ -758,6 +769,35 @@ export interface AbandonResult {
 }
 
 /**
+ * POST /api/bench/runs/:id/next, once a run has already banked every one of
+ * the fixed `LADDER_SIZE` (500) distinct rungs.
+ *
+ * Not an error: finishing the ladder is the best outcome a run can have, so
+ * this is a plain `200`, and it is shaped nothing like `PuzzleIssued` so a
+ * client cannot mistake it for one more board to solve. Every later call to
+ * `/next` on this run gets this same response — there is no next puzzle to
+ * derive, and returning `409 open_issue` or `404 no_open_issue` would make a
+ * finished run look stuck or abandoned rather than done.
+ */
+export interface LadderComplete {
+  complete: true;
+  protocol: number;
+  runId: string;
+  /** Always equal to `ladderSize` once this response is reachable. */
+  solved: number;
+  /** Restated rather than left implicit, so a client never has to hardcode
+   *  the ladder width to recognise this response. */
+  ladderSize: number;
+  totalPoints: number;
+}
+
+/** True for exactly the bodies `postNext` returns once a run has cleared the
+ *  whole ladder — a type guard so a client can branch on the shape rather
+ *  than a field it has to know to check. */
+export const isLadderComplete = (v: unknown): v is LadderComplete =>
+  typeof v === "object" && v !== null && (v as { complete?: unknown }).complete === true;
+
+/**
  * GET /api/bench — one row per `(model, provider)`. `?members=1` adds each
  * group's individual runs under `BenchGroupRow.members`; the flag is named
  * `members` rather than `runs` because `?runs=` already means "how many rows
@@ -765,7 +805,7 @@ export interface AbandonResult {
  */
 export interface BenchBody {
   rows: BenchGroupRow[];
-  /** So the client never hardcodes the same 1_000_000 twice. */
+  /** So the client never hardcodes the same 500 twice. */
   universe: number;
   /** Solve rows the aggregate saw, and whether that hit the cap. A truncated
    *  table is a different claim from a complete one and has to say so. */
@@ -979,20 +1019,22 @@ export function median(values: readonly number[]): number {
 }
 
 /**
- * Serial wall clock to clear the whole puzzle space at this run's effective
- * pace. It is a projection of one agent working one board at a time, which is
- * the only projection the chained sequence permits — there is no parallel
- * version of this number, and the UI must not let anyone read it as throughput.
+ * Serial wall clock to clear the whole puzzle space — the fixed 500-rung
+ * ladder — at this run's effective pace. It is a projection of one agent
+ * working one board at a time, which is the only projection the chained
+ * sequence permits — there is no parallel version of this number, and the UI
+ * must not let anyone read it as throughput.
  */
-export const projected1mHours = (medianWallMs: number) =>
+export const projected500Hours = (medianWallMs: number) =>
   (medianWallMs * PUZZLE_UNIVERSE) / MS_PER_HOUR;
 
 /**
- * Micro-USD per solve times a million puzzles is dollars, exactly — the two
- * factors of 1e6 cancel. Written as the full expression anyway, because the
- * coincidence is a fact about the units and not something to lean on.
+ * Micro-USD per solve times `PUZZLE_UNIVERSE` puzzles, converted out of
+ * micro-dollars. Unlike the old million-puzzle ladder, the two factors of 1e6
+ * no longer cancel to a tidy coincidence now that the universe is 500 — this
+ * is a plain unit conversion, not a shortcut.
  */
-export const projected1mCostUsd = (costPerSolveMicro: number) =>
+export const projected500CostUsd = (costPerSolveMicro: number) =>
   (costPerSolveMicro / 1_000_000) * PUZZLE_UNIVERSE;
 
 /**

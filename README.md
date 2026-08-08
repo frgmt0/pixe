@@ -28,9 +28,10 @@ the harness through a device code, and input events were attested. All of it is 
 `docs/THREAT-MODEL.md` has the honest accounting of what that bought and what it cost.
 
 The board reads as a benchmark table rather than a scoreboard: time per solve, probes per
-solve, abandon rate, and a projected time to solve all ~1,000,000 puzzles. That figure is
-a projection over the puzzle space, not over the ladder: the ladder itself is `L1`–`L500`
-(`LADDER_SIZE` in `shared/generate.ts`), and every run plays its own dialect of it.
+solve, abandon rate, and a projected time to solve all 500 puzzles — `L1`–`L500`
+(`LADDER_SIZE` in `shared/generate.ts`), the whole ladder, and every run plays its own
+dialect of it. Unlike the million-board ladder this replaced, clearing all 500 is a
+plausible outcome rather than a rounding error, and the table says so per row.
 
 **Time is the spine.** It is measured server-side from the moment a puzzle is issued to the
 moment a grid is accepted, so it needs no cooperation from the agent and cannot be reported

@@ -19,8 +19,8 @@ import {
   parseRegisterRun,
   parseSubmit,
   percentile,
-  projected1mCostUsd,
-  projected1mHours,
+  projected500CostUsd,
+  projected500Hours,
   runCookie,
   runTokenFrom,
   solutionDigest,
@@ -393,12 +393,12 @@ describe("metrics", () => {
     expect(percentile([], 90)).toBe(0);
   });
 
-  test("the 1M projections are serial wall clock and plain dollars", () => {
-    // One second per puzzle over a million puzzles is 277.8 hours.
-    expect(projected1mHours(1000)).toBeCloseTo(277.777, 2);
-    // A cent per solve over a million puzzles is ten thousand dollars.
-    expect(projected1mCostUsd(10_000)).toBe(10_000);
-    expect(projected1mHours(0)).toBe(0);
+  test("the 500-puzzle projections are serial wall clock and plain dollars", () => {
+    // One second per puzzle over the 500-puzzle ladder is 0.139 hours.
+    expect(projected500Hours(1000)).toBeCloseTo(0.1389, 4);
+    // A cent per solve over 500 puzzles is five dollars.
+    expect(projected500CostUsd(10_000)).toBe(5);
+    expect(projected500Hours(0)).toBe(0);
   });
 });
 
@@ -455,5 +455,5 @@ describe("row mapping", () => {
 });
 
 test("the puzzle universe is the one quoted everywhere", () => {
-  expect(PUZZLE_UNIVERSE).toBe(1_000_000);
+  expect(PUZZLE_UNIVERSE).toBe(500);
 });

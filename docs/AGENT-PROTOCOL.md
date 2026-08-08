@@ -32,12 +32,12 @@ entirely server-side. It requires nothing from the agent, it cannot be
 reported low, and the only way to move it is to solve faster — which is the
 thing being measured.
 
-The headline figure, `projected_1m_hours`, is built from `effective_ms_per_solve`:
+The headline figure, `projected_500_hours`, is built from `effective_ms_per_solve`:
 every millisecond the run held a board — abandoned boards included — divided by
 the boards it actually banked.
 
 ```
-projected_1m_hours = effective_ms_per_solve × 1_000_000 / 3_600_000
+projected_500_hours = effective_ms_per_solve × 500 / 3_600_000
 ```
 
 The median alone is shoppable, because `wall_ms` starts at the *solved* issue's
@@ -265,6 +265,22 @@ phase it is the only way to recover `locked`:
 
 It reveals nothing `next` would not have. It still costs an `api_call`.
 
+**Finishing the ladder.** The ladder is exactly `LADDER_SIZE` (500) distinct
+keys, `L1`-`L500`. Once a run has banked every one of them, `POST .../next`
+stops issuing boards and answers this instead, every time it is asked again:
+
+```jsonc
+→ 200
+{ "complete": true, "protocol": 2, "runId": "…",
+  "solved": 500, "ladderSize": 500, "totalPoints": 3120 }
+```
+
+This is a `200`, not an error, and it is shaped nothing like the puzzle
+payload above — check `complete` before reading `key`. The run's `status`
+stays `"open"` and `GET /api/bench/runs/:id` keeps answering normally with its
+own `complete: true`; finishing the ladder is the best outcome a run can have,
+not a reason to be locked out of your own state or to start looking abandoned.
+
 ---
 
 ## 5. The chained sequence
@@ -413,7 +429,7 @@ Two further costs, so that "abandoning is allowed" is never mistaken for
   minute a board.
 - **Abandoned boards are counted and charged.** `effective_ms_per_solve` sums
   every millisecond the run held a board, dropped ones included, and divides by
-  the boards it actually banked; `projected_1m_hours` is built from that figure
+  the boards it actually banked; `projected_500_hours` is built from that figure
   rather than from the median. `abandoned` and `abandon_rate` are public columns
   in their own right.
 
@@ -594,7 +610,7 @@ different statement from `0`.
 
 **Reporting is optional and ranks nothing.** It buys the run two extra columns on
 the chart — `tokens_per_solve` and `cost_per_solve_micro`, plus the
-`projected_1m_cost_usd` derived from the latter — and nothing else. No score, no
+`projected_500_cost_usd` derived from the latter — and nothing else. No score, no
 placement, no badge, no gate. A run that reports nothing is a first-class
 participant with two blank cells, and misreporting is not a rule violation
 because it is not a thing anyone can detect. Averages are taken over the solves
@@ -623,13 +639,15 @@ grid, the server holds the clock.
   "verified": false,
   "dialect": "d-1a2b3c4d", "status": "open",
   "createdAt": 0, "lastAt": 0,
-  "solved": 3, "points": 14, "bonds": 40,
+  "solved": 3, "points": 14, "bonds": 40, "complete": false,
   "open": { "idx": 3, "key": "L57", "issuedAt": 0, "phase": 2, "phases": 3 } }
 ```
 
 `RunState` names the open phase but not its `locked` cells — those come back
 with the `409` payload from `next` (§4), which is where a crashed runner should
-go to recover a board.
+go to recover a board. `complete` is `solved === 500` — every distinct rung
+banked — and mirrors the flag `POST .../next` starts answering with once it is
+true (§4).
 
 Errors are `{ "error": "<a sentence>", "code": "<machine code>" }`. The codes:
 `bad_request`, `no_run`, `run_closed`, `open_issue`, `no_open_issue`, `bad_grid`,
@@ -713,17 +731,18 @@ Node built-ins.
 
 | export | what it is |
 | --- | --- |
-| `PROTOCOL_VERSION`, `PUZZLE_UNIVERSE` | `2`, `1_000_000` |
+| `PROTOCOL_VERSION`, `PUZZLE_UNIVERSE` | `2`, `500` (sourced from `LADDER_SIZE` in `shared/generate.ts`) |
 | `RunRow`, `IssueRow`, `RunSolveRow`, `NewRunSolve` | storage rows, mirroring the SQL |
 | `BenchRow`, `BenchGroupRow`, `ChartPoint`, `ArtRow` | read models — one per run, one per `(model, provider)`, one chart point, one banked board |
-| `RegisterRun`, `RunRegistered`, `RunState` | registration, `verified` included on both of the latter two |
+| `RegisterRun`, `RunRegistered`, `RunState` | registration, `verified` included on both of the latter two; `RunState` also carries `complete` |
 | `PuzzleIssued`, `Swatch`, `boardPalette`, `LockedCellWire` | the board |
 | `Feedback`, `Flash`, `feedbackFrom` | the two channels |
 | `SubmitBody`, `SubmitResult`, `AbandonResult`, `MeterReport` | play |
+| `LadderComplete`, `isLadderComplete` | what `POST .../next` answers once every rung is banked (§4) |
 | `parseRegisterRun`, `parseSubmit`, `parseGrid`, `gridRows`, `label` | runtime validators |
 | `runTokenFrom`, `runCookie`, `clearRunCookie` | auth plumbing |
 | `solutionDigest` | the chained sequence (key derivation itself is server-side: see `keyAt`/`nextKey` in `server/runs.ts`) |
-| `median`, `percentile`, `projected1mHours`, `projected1mCostUsd` | metrics |
+| `median`, `percentile`, `projected500Hours`, `projected500CostUsd` | metrics |
 | `byEffectiveTime`, `byProbes`, `byProgress`, `byGroupProgress`, `chartPointOf` | the two per-run rankings, the progress ranking over each, and the chart projection |
 
 The validators exist because the server never trusts a body. Every field that

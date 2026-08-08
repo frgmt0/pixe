@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 import { encodeGrid } from "../shared/codec";
 import { dialectPhase, dialectPuzzle } from "../shared/dialect";
-import { phaseCountFor } from "../shared/generate";
+import { LADDER_SIZE, phaseCountFor } from "../shared/generate";
 import { CELLS, EMPTY, GRID, hueName } from "../shared/palette";
 import { gridRows, PROTOCOL_VERSION } from "../shared/protocol";
 import { handleRunApi, type RunDeps } from "./runs";
@@ -497,6 +497,81 @@ describe("multi-phase rungs", () => {
     expect(refused.data.phase).toBe(2);
     expect(((refused.data.open as Record<string, unknown>).locked as unknown[]).length).toBeGreaterThan(0);
   }, 60_000);
+});
+
+/**
+ * The ladder is a fixed `LADDER_SIZE` (500) distinct rungs, unlike the old
+ * million-key version, so "solve every rung" is a real outcome a run can
+ * reach rather than a rounding error. Walking a run through 500 real solves
+ * to exercise that boundary would make this suite the slow test in the repo
+ * for no reason: the property under test is what `/next` answers once the
+ * count is there, not how the count got there. So the fixture writes
+ * `run_solves` rows directly, the same "reach past the store" shortcut
+ * `rewriteIssuedAt` already uses below for a clock the product itself never
+ * moves backwards.
+ */
+describe("ladder completion", () => {
+  /** Inserts `n` already-banked rungs, `L1..Ln`, with distinct puzzle keys and
+   *  share ids so `bankedKeyCount`'s dedup-by-key has real work to skip. */
+  async function fabricateSolves(runId: string, n: number): Promise<void> {
+    const { Database } = await import("bun:sqlite");
+    const db = new Database(DB);
+    const art = encodeGrid(new Int8Array(CELLS).fill(0) as never);
+    const now = Date.now();
+    const insert = db.query(
+      `INSERT INTO run_solves
+         (run_id, idx, puzzle_key, points, bonds, difficulty, wall_ms, api_calls,
+          probes, tokens_in, tokens_out, cost_micro, art, share_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (let k = 1; k <= n; k++) {
+      insert.run(runId, k - 1, `L${k}`, 3, 0, 11, 1000, 1, 0, null, null, null, art, `ladder-${runId}-${k}`, now);
+    }
+    db.close();
+  }
+
+  test("one rung short of the ladder still issues a real puzzle", async () => {
+    const run = await register();
+    await fabricateSolves(run.runId, LADDER_SIZE - 1);
+
+    const r = await call("POST", `/api/bench/runs/${run.runId}/next`, run.token);
+    expect(r.status).toBe(200);
+    expect(r.data.complete).toBeUndefined();
+    expect(typeof r.data.key).toBe("string");
+
+    const me = await call("GET", `/api/bench/runs/${run.runId}`, run.token);
+    expect(me.data.complete).toBe(false);
+  });
+
+  test("a run that has banked every rung gets a clean completion response, not a manufactured board", async () => {
+    const run = await register();
+    await fabricateSolves(run.runId, LADDER_SIZE);
+
+    const r = await call("POST", `/api/bench/runs/${run.runId}/next`, run.token);
+    expect(r.status).toBe(200);
+    expect(r.data.complete).toBe(true);
+    expect(r.data.runId).toBe(run.runId);
+    expect(r.data.solved).toBe(LADDER_SIZE);
+    expect(r.data.ladderSize).toBe(LADDER_SIZE);
+    // Never issued a board: nothing to solve, nothing that looks like one.
+    expect(r.data.key).toBeUndefined();
+    expect(r.data.idx).toBeUndefined();
+
+    // Asking again gets exactly the same answer. There is no next puzzle to
+    // derive, so this must not 409 as if a board were being withheld, and it
+    // must not 404 as if the run had nothing left to say.
+    const again = await call("POST", `/api/bench/runs/${run.runId}/next`, run.token);
+    expect(again.status).toBe(200);
+    expect(again.data.complete).toBe(true);
+
+    // Finishing the ladder is not grounds to lock a run out of its own state:
+    // `status` stays "open", and `complete` on `RunState` says the rest.
+    const me = await call("GET", `/api/bench/runs/${run.runId}`, run.token);
+    expect(me.status).toBe(200);
+    expect(me.data.status).toBe("open");
+    expect(me.data.complete).toBe(true);
+    expect(me.data.solved).toBe(LADDER_SIZE);
+  });
 });
 
 /**
