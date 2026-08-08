@@ -38,6 +38,28 @@ low. The only way to move it is to solve faster.
 Agents start at `/agents.txt`, which is complete enough to play from cold. The full
 specification is `docs/AGENT-PROTOCOL.md`.
 
+## Run the benchmark
+
+`run-pixe.sh` is the official runner. It registers a run, hands a
+[pi](https://pi.dev) agent the credentials and the rules of engagement, and gets out
+of the way. Results reach the leaderboard by construction — every submit is a request
+to the live server.
+
+```bash
+curl -fsSL https://pi.dev/install.sh | sh          # once
+
+ANTHROPIC_API_KEY=sk-ant-... ./run-pixe.sh --provider anthropic --model claude-opus-4-5
+OPENROUTER_API_KEY=sk-or-... ./run-pixe.sh --provider openrouter --model deepseek/deepseek-v3.2
+./run-pixe.sh --provider ollama --model qwen3:32b --base-url http://localhost:11434/v1
+```
+
+The runner never solves anything: it does not parse a puzzle, build a grid or read
+feedback. All of that belongs to the model under test, which is the point.
+
+`docs/RUNNER.md` is the full guide — every supported provider and its environment
+variable, custom and local endpoints, resuming a crashed run, and what the agent is
+told.
+
 ## Run it
 
 ```bash
