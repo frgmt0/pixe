@@ -250,6 +250,8 @@ describe("puzzle shape", () => {
      * generator would be graded by exactly the check it optimises against, and
      * any drift between it and real validation would go unseen.
      */
+    // 120 keys × 10 patterns × 4 rotations of full-board assessment outgrew
+    // the default 5s budget when the law menu went from 12 families to 26.
     test("no puzzle falls to a mechanical pattern fill", () => {
       const patterns: ((x: number, y: number) => number)[] = [
         (x, y) => x + y,
@@ -281,7 +283,7 @@ describe("puzzle shape", () => {
           }
         }
       }
-    });
+    }, 60_000);
 
     test("no puzzle falls to a solid zone plus token cells of the other hues", () => {
       for (const key of LADDER.slice(0, 120)) {
@@ -312,7 +314,7 @@ describe("puzzle shape", () => {
           }
         }
       }
-    });
+    }, 60_000);
   });
 
   test("every rule renders to non-empty text", () => {
