@@ -27,9 +27,19 @@ import { sqliteStore } from "../server/store-sqlite";
 import type { RunRow } from "../server/store";
 
 interface Recipe {
-  /** The benchmarked identity, declared by the run and never verified. */
+  /** The benchmarked identity, declared by the run and never checked for
+   *  truth — only `verified` below says anything about where a run started. */
   model: string;
   provider: string;
+  /**
+   * Whether this run carried the maintainer's key at registration. Most seed
+   * runs do not, because most real runs will not either. Two of the recipes
+   * below deliberately share a `(model, provider)` pair with an earlier one —
+   * one verified, one not — so the seeded table actually exercises grouping
+   * and the "verified is preferred outright" rule rather than only ever
+   * showing one run per model.
+   */
+  verified: boolean;
   /** Free prose about the setup. Displayed under the model and ranked by nothing. */
   config: string | null;
   solves: number;
@@ -77,19 +87,20 @@ interface Recipe {
 
 const RECIPES: Recipe[] = [
   {
-    model: "FAKE-kestrel", provider: "fake-labs", config: "demo-model-a",
+    model: "FAKE-kestrel", provider: "fake-labs", verified: false, config: "demo-model-a",
     solves: 58, start: 96, floor: 21, halfLife: 14, jitter: 0.3, probeFactor: 1,
     abandonRate: 0.04, giveUpAt: 0.9,
     declaresTokens: 1, declaresCost: 1, tokenRate: 620, usdPerMTok: 9,
   },
   {
-    model: "FAKE-heron", provider: "fake-labs", config: "demo-model-b planner + demo-model-a subagents",
+    model: "FAKE-heron", provider: "fake-labs", verified: false,
+    config: "demo-model-b planner + demo-model-a subagents",
     solves: 44, start: 132, floor: 44, halfLife: 20, jitter: 0.34, probeFactor: 0.9,
     abandonRate: 0.1, giveUpAt: 1.1,
     declaresTokens: 0, declaresCost: 0, tokenRate: 0, usdPerMTok: 0,
   },
   {
-    model: "FAKE-shrike", provider: "fake-cloud", config: "demo-model-a, screenshots only",
+    model: "FAKE-shrike", provider: "fake-cloud", verified: false, config: "demo-model-a, screenshots only",
     solves: 36, start: 190, floor: 74, halfLife: 26, jitter: 0.28, probeFactor: 1.1,
     abandonRate: 0.06, giveUpAt: 1.2,
     declaresTokens: 1, declaresCost: 1, tokenRate: 410, usdPerMTok: 14,
@@ -98,7 +109,7 @@ const RECIPES: Recipe[] = [
     // Never gets faster: the flat fit is a result, and the page has to show it.
     // It never gets thriftier with its looks either, which is the same result
     // said in the other column.
-    model: "FAKE-plover", provider: "fake-cloud", config: "demo-model-c",
+    model: "FAKE-plover", provider: "fake-cloud", verified: false, config: "demo-model-c",
     solves: 27, start: 88, floor: 88, halfLife: Infinity, jitter: 0.42, probeFactor: 1.4,
     abandonRate: 0, giveUpAt: 1,
     declaresTokens: 0, declaresCost: 0, tokenRate: 0, usdPerMTok: 0,
@@ -106,7 +117,7 @@ const RECIPES: Recipe[] = [
   {
     // Config is optional, and a run without one has to render as a blank rather
     // than as anything that reads like a value.
-    model: "FAKE-godwit", provider: "fake-labs", config: null,
+    model: "FAKE-godwit", provider: "fake-labs", verified: false, config: null,
     solves: 19, start: 154, floor: 60, halfLife: 9, jitter: 0.26, probeFactor: 0.95,
     abandonRate: 0.12, giveUpAt: 0.8,
     declaresTokens: 1, declaresCost: 0, tokenRate: 900, usdPerMTok: 0,
@@ -116,7 +127,8 @@ const RECIPES: Recipe[] = [
     // worst on the page by probes: it paints and resubmits until something
     // sticks and drops whatever does not. Sorting by probes has to move it from
     // near the top to the bottom, or the column is not being read.
-    model: "FAKE-avocet", provider: "fake-cloud", config: "demo-model-c, 8 parallel painters",
+    model: "FAKE-avocet", provider: "fake-cloud", verified: false,
+    config: "demo-model-c, 8 parallel painters",
     solves: 12, start: 41, floor: 17, halfLife: 5, jitter: 0.22, probeFactor: 3.4,
     abandonRate: 0.62, giveUpAt: 0.7,
     declaresTokens: 0.35, declaresCost: 0.35, tokenRate: 1500, usdPerMTok: 22,
@@ -125,9 +137,39 @@ const RECIPES: Recipe[] = [
     // The slow endpoint. Last on the clock by a wide margin and mid-table on
     // probes, because a congested provider changes how long a run takes and not
     // how many times it had to look at the board.
-    model: "FAKE-dunlin", provider: "fake-labs", config: "demo-model-d, rate-limited endpoint",
+    model: "FAKE-dunlin", provider: "fake-labs", verified: false,
+    config: "demo-model-d, rate-limited endpoint",
     solves: 6, start: 240, floor: 120, halfLife: 30, jitter: 0.5, probeFactor: 0.8,
     abandonRate: 0.35, giveUpAt: 1.4,
+    declaresTokens: 0, declaresCost: 0, tokenRate: 0, usdPerMTok: 0,
+  },
+  /**
+   * Two recipes below share a `(model, provider)` with one above, and that is
+   * not an oversight — it is the only way to seed a page that actually
+   * exercises `/api/bench`'s grouping instead of only ever showing one run per
+   * model. Both `?members=1` and the group-vs-representative fold have
+   * nothing to fold over otherwise.
+   */
+  {
+    // Same model and provider as FAKE-kestrel above, but registered with the
+    // maintainer's key and with far fewer solves. It still has to win the
+    // representative slot — that is the whole point of "verified" outranking
+    // "more solves" rather than the other way round.
+    model: "FAKE-kestrel", provider: "fake-labs", verified: true,
+    config: "demo-model-a, maintainer's machine",
+    solves: 21, start: 91, floor: 24, halfLife: 12, jitter: 0.24, probeFactor: 0.85,
+    abandonRate: 0.02, giveUpAt: 0.9,
+    declaresTokens: 1, declaresCost: 1, tokenRate: 600, usdPerMTok: 9,
+  },
+  {
+    // Same model and provider as FAKE-heron above, neither verified, so the
+    // group is decided the ordinary way: most solves first, pace as the
+    // tiebreak — this one has more solves than the original FAKE-heron and
+    // must win the slot on that basis alone.
+    model: "FAKE-heron", provider: "fake-labs", verified: false,
+    config: "demo-model-b planner + demo-model-a subagents, retry x2",
+    solves: 51, start: 129, floor: 41, halfLife: 18, jitter: 0.31, probeFactor: 0.92,
+    abandonRate: 0.08, giveUpAt: 1.05,
     declaresTokens: 0, declaresCost: 0, tokenRate: 0, usdPerMTok: 0,
   },
 ];
@@ -200,6 +242,7 @@ async function seed(): Promise<void> {
       created_at: startedAt,
       last_at: startedAt,
       status: "closed",
+      verified: r.verified ? 1 : 0,
     };
     await store.createRun(run);
 
@@ -235,6 +278,14 @@ async function seed(): Promise<void> {
       const difficulty = rng.range(3, 7);
       const wall_ms = durationFor(nth, difficulty);
 
+      // A rung's points are the sum over its phases (migration 0004): 3-12 for
+      // a single board, up to 36 for a three-phase rung deep in the ladder.
+      // The ceiling widening with chain position is a loose echo of
+      // `phaseCountFor` — early rungs stay single-phase, later ones stack —
+      // without actually simulating phases in fabricated data.
+      const phaseCeiling = idx < 20 ? 12 : idx < 45 ? 24 : 36;
+      const points = rng.range(3, phaseCeiling);
+
       const reportsTokens = rng.next() < r.declaresTokens;
       const reportsCost = reportsTokens && rng.next() < r.declaresCost / Math.max(r.declaresTokens, 1e-9);
       const total = Math.round((wall_ms / 1000) * r.tokenRate * (0.8 + rng.next() * 0.4));
@@ -248,7 +299,7 @@ async function seed(): Promise<void> {
         run_id: id,
         idx,
         puzzle_key: `L${idx + 1}`,
-        points: difficulty,
+        points,
         bonds: rng.range(0, 14),
         difficulty,
         wall_ms,

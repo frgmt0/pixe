@@ -16,6 +16,14 @@ export interface Deps {
   ip: string;
   /** Whether to mark cookies `Secure` — false only on plain-HTTP localhost. */
   secure: boolean;
+  /**
+   * The maintainer's registration secret for this deployment, read from Bun's
+   * process env locally (`server/index.ts`) or the Workers env binding in
+   * production (`worker/index.ts`). `undefined` when this deployment has none
+   * configured, in which case no run served by it can ever be verified —
+   * there is no key to compare `X-Pixe-Verified-Key` against.
+   */
+  verifiedKey: string | undefined;
 }
 
 function json(data: unknown, init: ResponseInit = {}): Response {

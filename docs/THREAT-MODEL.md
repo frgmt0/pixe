@@ -167,6 +167,58 @@ deduction — deduction through feedback *is* the game. The real deterrent is th
 every probe is counted and published, so brute force does not go undetected, it
 goes on the record as a bad probe count.
 
+## Verified runs
+
+This is a narrow addition, and it is written here in the same register as
+everything above it: what it proves, what it costs an attacker, and what it
+does not do.
+
+**The mechanism.** `POST /api/bench/runs` accepts an optional
+`X-Pixe-Verified-Key` header. If it equals this deployment's `PIXE_VERIFIED_KEY`
+— compared with `sameString` in `server/crypto.ts`, constant-time — the run is
+created with `verified = 1`. `PIXE_VERIFIED_KEY` is read from Bun's process env
+locally and from the Workers secret in production (`bunx wrangler secret put
+PIXE_VERIFIED_KEY`); it is never sent to a client, never logged, and never
+appears in any response body — the registration response echoes back a
+`verified: true|false` boolean, never the key it was checked against.
+
+**What a wrong key does.** Nothing observable. A missing header, a wrong key,
+and no key configured on this deployment at all produce the identical
+response: `201`, `verified: false`. Registration never fails on identity, so
+the endpoint cannot be turned into an oracle for guessing the key by anyone
+probing it with wrong guesses — every guess looks exactly like no guess.
+
+**What this proves.** Precisely one thing: whoever sent this registration
+request held this deployment's own secret. The secret is never distributed —
+it lives in an env var on whatever machine or Worker runs `PIXE_VERIFIED_KEY`
+and nowhere else — so in practice the only party who can produce it is the
+maintainer, running the benchmark themselves. `verified` is a vouch about
+*where the run was started*, full stop.
+
+**What this does not prove.** That the declared `model` is accurate. That the
+run's harness behaved honestly for the rest of its life — the header is
+checked once, at registration, and nothing about `next`, `submit` or `abandon`
+depends on it. That a verified run is a *better* run in any sense the server
+can measure — `wall_ms`, probes and solves are exactly as trustworthy on an
+unverified run, because they were never the part that needed vouching for.
+Nobody should read `verified` as "this model definitely produced these
+pixels" — read it as "the maintainer started this one personally", which is a
+narrower and more honest claim.
+
+**A deployment with no key configured** — a fork, a local dev server, a clone
+someone stood up without setting the secret — can never mark anything
+verified, for anyone, including a request that happens to send the right
+string for some *other* deployment's key. There is no default key and no
+fallback: an absent `PIXE_VERIFIED_KEY` means an absent capability, not a
+weaker one.
+
+**How the table uses it.** `GET /api/bench` groups runs by `(model, provider)`
+and picks one representative per group — see `docs/BENCH.md`. If a group has
+any verified run, the representative is chosen from among the verified ones
+only, even if an unverified sibling in the same group banked far more. That
+rule is absolute, not a tiebreak: letting a bigger unverified number stand in
+for a model whenever it was more flattering would make the badge decorative.
+
 ## Wall-clock integrity
 
 Wall clock per solve, measured server-side from `issues.issued_at` to
@@ -226,10 +278,14 @@ shipped and was never turned into a gate, because the rate at which it fired on
 honest clients was never measured. It is gone unmeasured, which is the right
 outcome for a check nobody could show was safe to enforce.
 
-**What all of that cost, in one sentence:** pixe can no longer make any claim
-whatsoever about *who or what* is answering — not that a human was involved, not
+**What all of that cost, in one sentence:** pixe lost the ability to make any
+claim about *who or what* is answering — not that a human was involved, not
 that a browser was involved, not that the declared model is the model. `model`
-and `provider` are the run's own word about itself and nothing more.
+and `provider` are the run's own word about itself and nothing more. "Verified
+runs" above is a later, much narrower addition on top of this — a vouch about
+where a run was *started*, not a restoration of anything this section
+describes losing. It does not make `model` or `provider` any less the run's
+own word.
 
 **What it bought:** anyone can enter with one POST; the measured path contains
 only deduction and latency; and the parts of the system that were always the
@@ -240,12 +296,17 @@ server-side re-validation — are unchanged.
 
 Listed because they are real, not because they are handled.
 
-**Identity is unverified, and now unvouched.** `model`, `provider` and `config`
-are free text typed by the run. Nothing checks them and nothing will. A run can
-claim to be any model at all. **A pixe leaderboard is therefore a leaderboard of
-runs that claimed to be a model, not of models**, and any presentation that
-blurs that is misrepresenting this document. The measured columns are honest
-about *what happened*; the label on the row is not evidence of *who did it*.
+**Identity is unverified by default, and stays that way for almost every run.**
+`model`, `provider` and `config` are free text typed by the run. Nothing checks
+them against reality, and nothing will — see "Verified runs" above for the one
+narrow exception, which is a vouch about where a run started, not a check on
+whether its label is true. A run can still claim to be any model at all, and
+the overwhelming majority of rows on the table are exactly that: a claim,
+taken at its word, `verified` or not. **A pixe leaderboard is a leaderboard of
+runs that claimed to be a model** — some of them started by the maintainer, most
+of them not — and any presentation that blurs that is misrepresenting this
+document. The measured columns are honest about *what happened*; the label on
+a row is still not evidence of *who did it*.
 
 **Parallel runs.** Run creation is cheap and unauthenticated, so one operator
 can spawn many concurrent runs and publish only the luckiest. Bounded, not
@@ -279,7 +340,10 @@ There is no separate path and no attempt to tell the two apart.
 
 ## Out of scope
 
-**Identity.** Covered above and worth repeating: never verified, never will be.
+**Identity.** Covered above and worth repeating in the shortest form: `model`
+and `provider` are never checked against reality, and never will be.
+`verified` is a narrow exception to *provenance*, not to this — it says who
+started the run, never whether the run's own description of itself is true.
 
 **Tokens and cost.** Self-reported, optional, unverifiable, and never blended
 with server-measured fields. `run_solves.tokens_in`, `tokens_out` and

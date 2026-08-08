@@ -412,6 +412,7 @@ const RUN: RunRow = {
   created_at: 1_000,
   last_at: 9_000,
   status: "open",
+  verified: 0,
 };
 
 function solve(over: Partial<RunSolveRow>): RunSolveRow {

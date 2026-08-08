@@ -123,7 +123,13 @@ export const SCHEMA: string[] = [
     dialect     TEXT NOT NULL,
     created_at  INTEGER NOT NULL,
     last_at     INTEGER NOT NULL,
-    status      TEXT NOT NULL
+    status      TEXT NOT NULL,
+    -- 1 iff registration carried the maintainer's key in
+    -- X-Pixe-Verified-Key, checked in constant time against PIXE_VERIFIED_KEY.
+    -- A vouch about where the run was started, not about the model claim's
+    -- truth. Defaults to 0, and a deployment with no key configured can never
+    -- write anything else here.
+    verified    INTEGER NOT NULL DEFAULT 0
   )`,
   `CREATE INDEX IF NOT EXISTS runs_created ON runs(created_at)`,
   `CREATE INDEX IF NOT EXISTS runs_model ON runs(model, provider)`,
@@ -189,8 +195,8 @@ export const SCHEMA: string[] = [
 export const SQL = {
   createRun:
     `INSERT INTO runs
-       (id, secret, model, provider, config, dialect, created_at, last_at, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+       (id, secret, model, provider, config, dialect, created_at, last_at, status, verified)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
   runById: "SELECT * FROM runs WHERE id = ?",
   touchRun: "UPDATE runs SET last_at = ? WHERE id = ?",
   closeRun: "UPDATE runs SET status = ?, last_at = ? WHERE id = ?",

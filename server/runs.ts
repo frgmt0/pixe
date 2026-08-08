@@ -53,6 +53,9 @@ export interface RunDeps {
   store: Store;
   ip: string;
   secure: boolean;
+  /** The maintainer's registration secret, or `undefined` if this deployment
+   *  has none configured. See `isVerifiedRequest`. */
+  verifiedKey: string | undefined;
 }
 
 /** The width of the ladder, defined once in `shared/generate.ts`. */
@@ -383,6 +386,37 @@ function shareId(): string {
 }
 
 /* ------------------------------------------------------------------ */
+/* Verification                                                        */
+/* ------------------------------------------------------------------ */
+
+/** Case-insensitive by HTTP convention; `x-pixe-verified-key` is the canonical
+ *  lower-case form `Headers.get` normalises any casing to. */
+const VERIFIED_HEADER = "x-pixe-verified-key";
+
+/**
+ * Whether this registration request carries the maintainer's own secret.
+ *
+ * A vouch about *where the run was started* — that whoever registered it held
+ * this deployment's own key, which in practice means the maintainer's own
+ * machine — and nothing else. It does not check that the declared model is
+ * accurate; nothing does, and `docs/THREAT-MODEL.md` says so.
+ *
+ * Three ways to end up unverified, all indistinguishable from one another on
+ * the wire and all still a normal `201`: no key configured on this server at
+ * all, no header sent, or a header that does not match. A wrong key must not
+ * behave differently from a missing one — the register endpoint is
+ * unauthenticated and world-reachable, so treating a bad guess as informative
+ * would make it an oracle for finding the right one. `sameString` compares in
+ * constant time for the same reason.
+ */
+function isVerifiedRequest(req: Request, verifiedKey: string | undefined): boolean {
+  if (!verifiedKey) return false;
+  const provided = req.headers.get(VERIFIED_HEADER);
+  if (!provided) return false;
+  return sameString(provided, verifiedKey);
+}
+
+/* ------------------------------------------------------------------ */
 /* Handlers                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -392,9 +426,11 @@ function shareId(): string {
  * The body names the model and the provider. Nothing checks either, and the
  * threat model says so in those words: this is a declared identity, recorded
  * exactly as given, and every column that ranks anything is measured instead.
+ * `verified` is the one exception, and it is checked here, once, at
+ * registration — see `isVerifiedRequest`.
  */
 export async function postRun(req: Request, _url: URL, deps: RunDeps): Promise<Response> {
-  const { store, ip, secure } = deps;
+  const { store, ip, secure, verifiedKey } = deps;
   const now = Date.now();
 
   // Database-backed rather than a `Map`: on Workers requests land in whichever
@@ -409,6 +445,7 @@ export async function postRun(req: Request, _url: URL, deps: RunDeps): Promise<R
   if (!parsed.ok) return fail(400, parsed.error, parsed.code);
 
   const secret = randHex(32);
+  const verified = isVerifiedRequest(req, verifiedKey);
   const run = await store.createRun({
     id: randB64(12),
     secret,
@@ -419,6 +456,7 @@ export async function postRun(req: Request, _url: URL, deps: RunDeps): Promise<R
     created_at: now,
     last_at: now,
     status: "open",
+    verified: verified ? 1 : 0,
   });
 
   const token = await mintToken(run);
@@ -429,6 +467,7 @@ export async function postRun(req: Request, _url: URL, deps: RunDeps): Promise<R
     model: run.model,
     provider: run.provider,
     config: run.config,
+    verified: run.verified === 1,
     // NOT the dialect salt. A client holding the salt can re-derive every law in
     // the run. This is a stable public name for the dialect, so two runs can be
     // told apart without either being handed the other's board.
@@ -454,6 +493,7 @@ export async function getRun(req: Request, id: string, deps: RunDeps): Promise<R
     model: run.model,
     provider: run.provider,
     config: run.config,
+    verified: run.verified === 1,
     dialect: await dialectLabel(run.secret),
     status: run.status,
     createdAt: run.created_at,

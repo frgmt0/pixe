@@ -67,14 +67,28 @@ questions: probes measure deduction, time measures throughput.
 registration; `config`, free prose about the setup; and `tokensIn`, `tokensOut`,
 `costMicro` on each submit.
 
-We do not verify that a run is what it says it is. That is a scoping decision,
+We do not verify that `model` or `provider` are true. That is a scoping decision,
 not an unfinished one — proving a claim of identity is a different problem from
 measuring deduction, and this benchmark is not trying to solve it. The declared
 fields are free text with sane limits, shown exactly as submitted, and nothing
-ranks on them. What they are *for* is grouping: `model` and `provider` are the
-two columns a leaderboard can honestly aggregate on, and both are required at
+ranks on their *content*. What they are *for* is grouping: `model` and `provider`
+are the two columns the leaderboard aggregates on, and both are required at
 registration because a leaderboard grouped on a mostly-null column is not a
 leaderboard.
+
+**`verified` is the one narrow exception, and it is a claim about provenance,
+never about truth.** Registration accepts an optional `X-Pixe-Verified-Key`
+header; if it matches this deployment's own secret — compared in constant time,
+never logged, never echoed — the run is marked verified. A wrong or missing key
+does not fail registration, it just leaves the run unverified, identically to a
+deployment with no key configured at all: three different situations, one
+observable outcome, so the header can never be probed for the right answer. The
+secret lives only in this deployment's own environment and is never handed to
+anyone entering the benchmark, so in practice only the maintainer, running the
+benchmark themselves, can produce it. `verified` says *this run was started by
+whoever holds this deployment's key* — it does not check `model`, it does not
+outlive registration, and it is not evidence that the pixels that follow are
+what they claim to be. `docs/THREAT-MODEL.md` has the full accounting.
 
 The two kinds of number never mix in a single column. Measured values are
 non-null and authoritative. Declared values are separately named, nullable, and
@@ -133,7 +147,7 @@ POST /api/bench/runs
 → 201
 { "protocol": 2, "runId": "…", "runToken": "…",
   "model": "claude-opus-5", "provider": "anthropic",
-  "config": "8 parallel painters",
+  "config": "8 parallel painters", "verified": false,
   "dialect": "d-1a2b3c4d", "status": "open", "createdAt": 1730000000000 }
 ```
 
@@ -143,6 +157,25 @@ flattened, whitespace collapsed, length capped at 64 — because they land on a
 public page. They are not validated for truth, because there is nothing to check
 them against, and there is deliberately no allowlist: a benchmark whose newest
 entrant cannot register until someone updates a constant is a broken benchmark.
+
+`verified` reflects an optional header on this same request:
+
+```
+POST /api/bench/runs
+X-Pixe-Verified-Key: <the deployment's own secret>
+{ "model": "claude-opus-5", "provider": "anthropic" }
+```
+
+If the header matches this server's `PIXE_VERIFIED_KEY` — checked in constant
+time — `verified` comes back `true` and the run is marked so for its whole life.
+Anything else — no header, a wrong one, or a deployment with no key configured
+— comes back `verified: false`, and registration succeeds exactly the same way
+either way; a bad guess is never told apart from no guess. This is not an
+identity check. It is a narrow claim about where the run was started, and it
+exists because the key is not distributed to anyone entering the benchmark — in
+practice, only the maintainer's own machine can send the right one. See
+`docs/THREAT-MODEL.md`'s "Verified runs" section for the full account, including
+what it deliberately does not prove.
 
 A run replaces the user account: no name, no password, no email, no key. The
 `runToken` is returned in the body *and* set as an HttpOnly cookie, and both
@@ -574,7 +607,7 @@ invent a cheaper agent than the one that played.
 
 ```
 GET  /api/bench/runs/:id   (auth: runToken)  →  RunState
-GET  /api/bench                              →  { rows: BenchRow[], universe, … }
+GET  /api/bench                              →  { rows: BenchGroupRow[], universe, … }
 GET  /api/bench/points                       →  { points: ChartPoint[] }
 GET  /api/art/:shareId                       →  one banked board, laws revealed
 GET  /api/gallery                            →  recent banked boards
@@ -587,6 +620,7 @@ grid, the server holds the clock.
 
 ```jsonc
 { "protocol": 2, "runId": "…", "model": "…", "provider": "…", "config": null,
+  "verified": false,
   "dialect": "d-1a2b3c4d", "status": "open",
   "createdAt": 0, "lastAt": 0,
   "solved": 3, "points": 14, "bonds": 40,
@@ -601,10 +635,14 @@ Errors are `{ "error": "<a sentence>", "code": "<machine code>" }`. The codes:
 `bad_request`, `no_run`, `run_closed`, `open_issue`, `no_open_issue`, `bad_grid`,
 `rate_limited`, `not_found`, `server_error`.
 
-Rows in `/api/bench` aggregate **per run**. Two runs of the same model are two
-data points, not one averaged claim; folding them into a per-model leaderboard is
-a deliberate later step, and `model` + `provider` are the columns it groups on.
-`docs/BENCH.md` is the full account of the table.
+Rows in `/api/bench` are **one per `(model, provider)`**, folded from the
+underlying per-run rows: the ladder is a fixed 500 boards and brutally hard, so
+the table ranks on progress first and pace second, and each model's row is one
+real run's own numbers — the best in the group, chosen the same way the table
+itself is ordered, with a verified run preferred outright over an unverified
+one regardless of which banked more. `?members=1` unfolds a group back into its
+individual runs, for anyone who wants the per-run view the table used to be.
+`docs/BENCH.md` is the full account.
 
 ### Budgets
 
@@ -655,10 +693,13 @@ behind every stroke. Both are gone. What they bought was a weak claim — that
 *somebody* said this was Claude Code, and that the pixels came from something
 browser-shaped — at the price of an onboarding step no agent could complete
 alone and a measured path full of things that had nothing to do with deduction.
-What is lost is any evidence at all about who is running: `model` and `provider`
-are now the run's own word. What is gained is that the benchmark measures the
-thing it claims to measure, and that anyone can enter it with one POST.
+What is lost is any evidence about who is running: `model` and `provider` are
+the run's own word. What is gained is that the benchmark measures the thing it
+claims to measure, and that anyone can enter it with one POST.
 `docs/THREAT-MODEL.md` states the resulting trust model without softening it.
+`verified` (§3, §10) is a later, narrower addition on top of this, not a
+reversal of it — it vouches for where a run started, never for what `model`
+says.
 
 A voided run keeps its rows but is marked `void` and does not rank.
 
@@ -674,8 +715,8 @@ Node built-ins.
 | --- | --- |
 | `PROTOCOL_VERSION`, `PUZZLE_UNIVERSE` | `2`, `1_000_000` |
 | `RunRow`, `IssueRow`, `RunSolveRow`, `NewRunSolve` | storage rows, mirroring the SQL |
-| `BenchRow`, `ChartPoint`, `ArtRow` | read models |
-| `RegisterRun`, `RunRegistered`, `RunState` | registration |
+| `BenchRow`, `BenchGroupRow`, `ChartPoint`, `ArtRow` | read models — one per run, one per `(model, provider)`, one chart point, one banked board |
+| `RegisterRun`, `RunRegistered`, `RunState` | registration, `verified` included on both of the latter two |
 | `PuzzleIssued`, `Swatch`, `boardPalette`, `LockedCellWire` | the board |
 | `Feedback`, `Flash`, `feedbackFrom` | the two channels |
 | `SubmitBody`, `SubmitResult`, `AbandonResult`, `MeterReport` | play |
@@ -683,7 +724,7 @@ Node built-ins.
 | `runTokenFrom`, `runCookie`, `clearRunCookie` | auth plumbing |
 | `solutionDigest` | the chained sequence (key derivation itself is server-side: see `keyAt`/`nextKey` in `server/runs.ts`) |
 | `median`, `percentile`, `projected1mHours`, `projected1mCostUsd` | metrics |
-| `byEffectiveTime`, `byProbes`, `chartPointOf` | the table |
+| `byEffectiveTime`, `byProbes`, `byProgress`, `byGroupProgress`, `chartPointOf` | the two per-run rankings, the progress ranking over each, and the chart projection |
 
 The validators exist because the server never trusts a body. Every field that
 crosses the wire is checked at runtime, in one place, rather than cast at the

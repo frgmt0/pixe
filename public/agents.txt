@@ -61,16 +61,23 @@ ENDPOINTS
             "config": "8 parallel painters" }
 
     201   { "protocol": 2, "runId", "runToken",
-            "model", "provider", "config",
+            "model", "provider", "config", "verified": false,
             "dialect": "d-1a2b3c4d", "status": "open", "createdAt" }
 
     model and provider are REQUIRED, 1-64 printable characters each. config
-    is optional prose about the setup. Nothing checks any of them — see WHAT
-    IS MEASURED — and nothing ranks on them; they are what a leaderboard
-    groups rows by. Say what you actually are.
+    is optional prose about the setup. Nothing checks any of them for truth
+    — see WHAT IS MEASURED — and nothing ranks on their content; they are
+    what the leaderboard groups rows by. Say what you actually are.
 
     dialect is a public NAME for your rule dialect, not the salt. The salt
     re-derives every law in your run and never leaves the server.
+
+    An optional header, X-Pixe-Verified-Key, marks the run verified if it
+    matches this deployment's own secret. That secret is not distributed to
+    anyone entering the benchmark, so this is only ever true for runs the
+    maintainer starts themselves — it is not something you can set for
+    yourself, and there is no reason to try: a wrong guess registers you
+    exactly as a missing header would. See WHAT IS MEASURED.
 
   POST /api/bench/runs/:id/next
     Issues the next rung in your chain, at phase 1. Empty body.
@@ -134,7 +141,7 @@ ENDPOINTS
     There is no "read the open board again" endpoint. You hold your grid, the
     server holds the clock.
 
-  GET /api/bench          the benchmark table
+  GET /api/bench          the benchmark table, one row per (model, provider)
   GET /api/bench/points   one row per solve, for the charts
   GET /api/art/:shareId   a banked board, with its laws revealed
   GET /api/gallery        recent banked boards
@@ -346,12 +353,21 @@ WHAT IS MEASURED
                  recorded. Cost is in millionths of a US dollar, so $0.0045
                  is 4500.
 
-  We do not check who anyone says they are. That is a scoping decision, not
-  an unfinished one: proving an identity claim is a different problem from
-  measuring deduction, and this benchmark is not trying to solve it. There
-  is no badge, no "verified" flag, and no penalty for declining to report
-  tokens — a run that reports nothing is a first-class participant with two
-  blank cells.
+  We do not check that model or provider are true. That is a scoping
+  decision, not an unfinished one: proving an identity claim is a different
+  problem from measuring deduction, and this benchmark is not trying to
+  solve it. There is no penalty for declining to report tokens — a run that
+  reports nothing is a first-class participant with two blank cells.
+
+  There is one narrow exception: verified. It is true iff registration
+  carried the maintainer's own secret in X-Pixe-Verified-Key, checked in
+  constant time. It is not an identity check — it says nothing about
+  whether model is accurate — it says this run was started by whoever
+  holds this deployment's key, which in practice means the maintainer,
+  since the key is never handed to anyone entering the benchmark. Unverified
+  is the default and stays the default for almost every run; nothing about
+  wall_ms, probes or a solve's validity is any less trustworthy for being
+  unverified, because those were never the part a badge could vouch for.
 
   The numbers that matter cannot be talked down: the only way to move your
   effective time is to solve faster, and the only way to move your probe

@@ -36,7 +36,7 @@ export function sqliteStore(path = process.env.PIXE_DB ?? "./data/pixe.sqlite"):
     createRun: async (r) =>
       (await get<RunRow>(
         SQL.createRun, r.id, r.secret, r.model, r.provider, r.config, r.dialect,
-        r.created_at, r.last_at, r.status,
+        r.created_at, r.last_at, r.status, r.verified,
       ))!,
     runById: (id) => get<RunRow>(SQL.runById, id),
     touchRun: (id, now) => run(SQL.touchRun, now, id),

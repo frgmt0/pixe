@@ -13,6 +13,13 @@ export interface Env {
   DB: D1;
   /** Workers Assets binding — the built `dist/`, served from the edge. */
   ASSETS: { fetch(request: Request): Promise<Response> };
+  /**
+   * The maintainer's registration secret. Set with
+   * `bunx wrangler secret put PIXE_VERIFIED_KEY`, never committed. Absent in
+   * any environment that has not set it, in which case nothing served by that
+   * environment can ever be verified.
+   */
+  PIXE_VERIFIED_KEY?: string;
 }
 
 export default {
@@ -31,6 +38,7 @@ export default {
       ip: request.headers.get("cf-connecting-ip") ?? "unknown",
       // The custom domain is HTTPS-only, so the session cookie is always Secure.
       secure: true,
+      verifiedKey: env.PIXE_VERIFIED_KEY,
     });
   },
 

@@ -164,4 +164,40 @@ await Bun.write(
   ].join("\n"),
 );
 
-console.log(`wrote ${SCHEMA.length} statements to 0001, 0002, 0003 and 0004`);
+/**
+ * 0005 is verified runs.
+ *
+ * A run registered with the maintainer's own secret in `X-Pixe-Verified-Key`
+ * carries a vouch nothing else here can offer: that whoever started it held
+ * the deployment's own key, which in practice means the maintainer's own
+ * machine. It says nothing about whether the declared model is accurate — see
+ * `docs/THREAT-MODEL.md` — only about where the run came from.
+ *
+ * Purely additive, and safe against a live database for the same reason 0004
+ * was: the column defaults to 0, which is exactly what every existing row
+ * already is under the honest reading — none of them were ever checked
+ * against anything, because this column did not exist yet.
+ */
+const VERIFIED = ["ALTER TABLE runs ADD COLUMN verified INTEGER NOT NULL DEFAULT 0;"];
+
+await Bun.write(
+  url("0005_verified.sql"),
+  [
+    ...HEADER,
+    "-- Verified runs: a run registered with the maintainer's own key in",
+    "-- X-Pixe-Verified-Key is marked so. Additive and safe to run against a",
+    "-- live database — every existing row is already correct under the default.",
+    "--",
+    "--   bunx wrangler d1 execute pixe-db --remote --file migrations/0005_verified.sql",
+    "",
+    ...VERIFIED,
+    "",
+    "-- The current schema verbatim, so a fresh database ends up identical to a",
+    "-- migrated one.",
+    "",
+    ...body,
+    "",
+  ].join("\n"),
+);
+
+console.log(`wrote ${SCHEMA.length} statements to 0001, 0002, 0003, 0004 and 0005`);

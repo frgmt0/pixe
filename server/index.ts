@@ -52,7 +52,14 @@ const server = Bun.serve({
       server.requestIP(req)?.address ||
       "unknown";
 
-    return handleApiSafe(req, url, { store, ip, secure: PROD });
+    return handleApiSafe(req, url, {
+      store,
+      ip,
+      secure: PROD,
+      // Bun's own process env locally; the Worker reads the equivalent from
+      // its env binding — see worker/index.ts.
+      verifiedKey: process.env.PIXE_VERIFIED_KEY,
+    });
   },
 });
 

@@ -30,6 +30,7 @@ const RUN: RunRow = {
   created_at: 0,
   last_at: 0,
   status: "open",
+  verified: 0,
 };
 
 /** A banked solve carrying a specific grid, which is all the chain reads. */

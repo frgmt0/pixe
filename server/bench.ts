@@ -18,11 +18,14 @@
 
 import {
   byEffectiveTime,
+  byGroupProgress,
+  byProgress,
   median,
   percentile,
   projected1mCostUsd,
   projected1mHours,
   PUZZLE_UNIVERSE,
+  type BenchGroupRow,
   type BenchRow as WireBenchRow,
   type BenchPointsBody,
   type ChartPoint,
@@ -53,8 +56,15 @@ export interface BenchStore {
  */
 export type BenchRow = WireBenchRow;
 
+/**
+ * The model-grouped row `/api/bench` actually serves. Defined once in
+ * `shared/protocol.ts` — see it there for what each field means and why the
+ * representative is a real run's numbers rather than an average.
+ */
+export type { BenchGroupRow };
+
 export interface BenchBody {
-  rows: BenchRow[];
+  rows: BenchGroupRow[];
   universe: number;
   pointsConsidered: number;
   truncated: boolean;
@@ -154,6 +164,9 @@ export function summariseFromPoints(
     provider: run.provider,
     config: run.config,
     status: run.status,
+    // `RunRow.verified` is the SQLite/D1-native 0|1; this is the one place it
+    // becomes the wire's `boolean`.
+    verified: run.verified === 1,
 
     solved: solves.length,
     points: sum(solves.map((s) => s.points)),
@@ -189,15 +202,16 @@ export function summariseFromPoints(
 }
 
 /**
- * Both rankings moved to `shared/protocol.ts` and are re-exported here.
+ * The rankings moved to `shared/protocol.ts` and are re-exported here.
  *
  * The table re-sorts client-side when a reader toggles a column, so a
  * comparator that lived only on the server would have had a second
  * implementation in the browser — and two answers to "which run is ahead" on
  * one page is precisely what the rest of this file exists to avoid.
- * `byEffectiveTime` is still what this endpoint serves.
+ * `byGroupProgress` is what `/api/bench` itself serves now; `byEffectiveTime`
+ * and `byProbes` remain available for the per-run `members` list.
  */
-export { byEffectiveTime, byProbes } from "../shared/protocol";
+export { byEffectiveTime, byProbes, byProgress, byGroupProgress } from "../shared/protocol";
 
 export async function buildBenchRows(
   store: BenchStore,
@@ -227,6 +241,144 @@ export async function buildBenchRows(
 }
 
 /* ------------------------------------------------------------------ */
+/* Grouping -- one row per (model, provider)                          */
+/* ------------------------------------------------------------------ */
+
+interface DeclaredSums {
+  tokensIn: number | null;
+  tokensOut: number | null;
+  costMicro: number | null;
+  maxRung: number | null;
+}
+
+/**
+ * Sums, not means -- a model-grouped row wants "how much did clearing this
+ * much ladder cost", not a per-solve average duplicating what `BenchRow`
+ * already gives the per-run view. Null when the run reported nothing at all
+ * for that figure on any solve, never zero; `maxRung` is the furthest chain
+ * position the run's own issues reached, which includes abandoned boards --
+ * "how far in", not "how many landed".
+ */
+function declaredSums(points: readonly ChartPoint[]): DeclaredSums {
+  let tokensIn = 0;
+  let tokensOut = 0;
+  let costMicro = 0;
+  let hasTokensIn = false;
+  let hasTokensOut = false;
+  let hasCost = false;
+  let maxIdx = -1;
+  for (const p of points) {
+    if (p.tokens_in != null) {
+      tokensIn += p.tokens_in;
+      hasTokensIn = true;
+    }
+    if (p.tokens_out != null) {
+      tokensOut += p.tokens_out;
+      hasTokensOut = true;
+    }
+    if (p.cost_micro != null) {
+      costMicro += p.cost_micro;
+      hasCost = true;
+    }
+    if (p.idx > maxIdx) maxIdx = p.idx;
+  }
+  return {
+    tokensIn: hasTokensIn ? tokensIn : null,
+    tokensOut: hasTokensOut ? tokensOut : null,
+    costMicro: hasCost ? costMicro : null,
+    maxRung: points.length ? maxIdx : null,
+  };
+}
+
+/**
+ * Folds per-run rows into one row per `(model, provider)`.
+ *
+ * Grouped with a `Map<model, Map<provider, BenchRow[]>>` rather than a joined
+ * string key -- `model` and `provider` are free text with no separator either
+ * one is forbidden from containing, so `"A B"`/`"C"` and `"A"`/`"B C"` would
+ * collide on any string delimiter. Nesting the maps sidesteps the question
+ * instead of trying to pick a character neither field can contain.
+ *
+ * The representative is chosen by `byProgress` -- most ladder progress, pace as
+ * the tiebreak -- over a pool that is the group's *verified* runs when there
+ * are any, and the whole group otherwise. That "verified strictly preferred"
+ * rule is deliberate and absolute: a model with one verified run at 40 solves
+ * and one unverified run at 400 is represented by the 40-solve run, because
+ * the alternative -- letting an unverified run's numbers stand in for a model
+ * just because they are more flattering -- is exactly the thing a verified
+ * badge exists to prevent someone from doing.
+ *
+ * `members` (every run in the group, individually) is attached only when the
+ * caller asked for it -- see `handleBench`'s `?members=1`.
+ */
+export function buildBenchGroups(
+  runRows: readonly BenchRow[],
+  solves: readonly ChartPoint[],
+  includeMembers: boolean,
+): BenchGroupRow[] {
+  const byRun = new Map<string, ChartPoint[]>();
+  for (const s of solves) {
+    const bucket = byRun.get(s.run_id);
+    if (bucket) bucket.push(s);
+    else byRun.set(s.run_id, [s]);
+  }
+
+  const groups = new Map<string, Map<string, BenchRow[]>>();
+  for (const row of runRows) {
+    let byProvider = groups.get(row.model);
+    if (!byProvider) {
+      byProvider = new Map();
+      groups.set(row.model, byProvider);
+    }
+    const bucket = byProvider.get(row.provider);
+    if (bucket) bucket.push(row);
+    else byProvider.set(row.provider, [row]);
+  }
+
+  const out: BenchGroupRow[] = [];
+  for (const byProvider of groups.values()) {
+    for (const members of byProvider.values()) {
+      const verifiedMembers = members.filter((m) => m.verified);
+      const pool = verifiedMembers.length ? verifiedMembers : members;
+      const rep = pool.reduce((best, cur) => (byProgress(cur, best) < 0 ? cur : best));
+      const sums = declaredSums(byRun.get(rep.run_id) ?? []);
+
+      out.push({
+        model: rep.model,
+        provider: rep.provider,
+        verified: rep.verified,
+        runs: members.length,
+        verifiedRuns: verifiedMembers.length,
+
+        solves: rep.solved,
+        totalPoints: rep.points,
+
+        effective_ms_per_solve: rep.effective_ms_per_solve,
+        median_wall_ms: rep.median_wall_ms,
+        probes_per_solve: rep.probes_per_solve,
+        abandoned: rep.abandoned,
+        abandon_rate: rep.abandon_rate,
+
+        tokensIn: sums.tokensIn,
+        tokensOut: sums.tokensOut,
+        costMicro: sums.costMicro,
+
+        config: rep.config,
+        maxRung: sums.maxRung,
+
+        run_id: rep.run_id,
+        first_at: rep.first_at,
+        last_at: rep.last_at,
+
+        ...(includeMembers ? { members: [...members] } : {}),
+      });
+    }
+  }
+
+  return out.sort(byGroupProgress);
+}
+
+/* ------------------------------------------------------------------ */
 /* Handlers                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -235,14 +387,19 @@ export async function handleBench(req: Request, url: URL, deps: BenchDeps): Prom
 
   const pointLimit = clampParam(url, "points", DEFAULT_POINTS, MAX_POINTS);
   const runLimit = clampParam(url, "runs", DEFAULT_RUNS, MAX_RUNS);
+  // Named `members`, not `runs`: `?runs=` already means "how many rows the
+  // aggregation may consider" (above), which is unrelated to whether each
+  // group's individual runs are unfolded in the response.
+  const includeMembers = url.searchParams.get("members") === "1";
 
   const [runs, solves] = await Promise.all([
     deps.store.runs(runLimit),
     deps.store.allSolvesForCharts(pointLimit),
   ]);
 
+  const runRows = await buildBenchRows(deps.store, runs, solves);
   const body: BenchBody = {
-    rows: await buildBenchRows(deps.store, runs, solves),
+    rows: buildBenchGroups(runRows, solves, includeMembers),
     universe: PUZZLE_UNIVERSE,
     pointsConsidered: solves.length,
     truncated: solves.length >= pointLimit,

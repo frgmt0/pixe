@@ -417,9 +417,12 @@ and cannot replay it.
 If the flag is passed and no key file exists, the run registers unverified and
 says so. Nothing fails.
 
-> **Status:** server-side handling of this header ships in a later wave. Today
-> the header is accepted and ignored, which is why sending it is safe now — the
-> runner does not need a second release to start working.
+The registration response carries `"verified": true|false`, so you can confirm
+it actually took rather than assuming from a `201` alone — a wrong key, a
+missing one, and a deployment with no `PIXE_VERIFIED_KEY` configured all
+register the run identically and all come back `false`. The runner does not
+currently print this field back to the terminal; read it off the response body
+directly, or `GET /api/bench/runs/:id` later, which carries the same field.
 
 ---
 

@@ -5,7 +5,7 @@ import { dialectPhase, dialectPuzzle } from "../shared/dialect";
 import { phaseCountFor } from "../shared/generate";
 import { CELLS, EMPTY, GRID, hueName } from "../shared/palette";
 import { gridRows, PROTOCOL_VERSION } from "../shared/protocol";
-import { handleRunApi } from "./runs";
+import { handleRunApi, type RunDeps } from "./runs";
 import { sqliteStore } from "./store-sqlite";
 import type { Store } from "./store";
 
@@ -26,7 +26,7 @@ afterAll(() => {
   for (const suffix of ["", "-wal", "-shm"]) rmSync(`${DB}${suffix}`, { force: true });
 });
 
-const deps = { store, ip: "127.0.0.1", secure: false };
+const deps = { store, ip: "127.0.0.1", secure: false, verifiedKey: undefined };
 
 async function call(
   method: "GET" | "POST",
@@ -497,6 +497,84 @@ describe("multi-phase rungs", () => {
     expect(refused.data.phase).toBe(2);
     expect(((refused.data.open as Record<string, unknown>).locked as unknown[]).length).toBeGreaterThan(0);
   }, 60_000);
+});
+
+/**
+ * Verified runs: a registration that carries the maintainer's secret in
+ * `X-Pixe-Verified-Key`, checked in constant time.
+ *
+ * Everything here goes through `handleRunApi` directly rather than the file's
+ * `call`/`register` helpers, because those are bound to the module-level
+ * `deps` (no key configured) and this needs to vary `deps.verifiedKey` and the
+ * request header independently.
+ */
+describe("verified registration", () => {
+  const VERIFIED_KEY = "test-verified-secret-do-not-print-me";
+  const verifiedDeps: RunDeps = { store, ip: "127.0.0.1", secure: false, verifiedKey: VERIFIED_KEY };
+  const unconfiguredDeps: RunDeps = { store, ip: "127.0.0.1", secure: false, verifiedKey: undefined };
+
+  async function registerWith(
+    depsToUse: RunDeps,
+    headers: Record<string, string> = {},
+  ): Promise<Record<string, unknown>> {
+    const url = "http://x/api/bench/runs";
+    const res = await handleRunApi(
+      new Request(url, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...headers },
+        body: JSON.stringify({ model: "verified-test-model", provider: "verified-test-provider" }),
+      }),
+      new URL(url),
+      depsToUse,
+    );
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(201); // A key, right or wrong, never fails registration.
+    return (await res!.json()) as Record<string, unknown>;
+  }
+
+  test("the right key verifies the run", async () => {
+    const data = await registerWith(verifiedDeps, { "x-pixe-verified-key": VERIFIED_KEY });
+    expect(data.verified).toBe(true);
+    const row = await store.runById(data.runId as string);
+    expect(row!.verified).toBe(1);
+  });
+
+  test("a wrong key registers the run unverified, not refused", async () => {
+    const data = await registerWith(verifiedDeps, { "x-pixe-verified-key": "not-the-key" });
+    expect(data.verified).toBe(false);
+    const row = await store.runById(data.runId as string);
+    expect(row!.verified).toBe(0);
+  });
+
+  test("no header means unverified", async () => {
+    const data = await registerWith(verifiedDeps);
+    expect(data.verified).toBe(false);
+  });
+
+  test("a server with no key configured can never verify anyone", async () => {
+    // The "right" key for a deployment that has one is meaningless to a
+    // deployment that has none: there is nothing to compare it against.
+    const data = await registerWith(unconfiguredDeps, { "x-pixe-verified-key": VERIFIED_KEY });
+    expect(data.verified).toBe(false);
+    const row = await store.runById(data.runId as string);
+    expect(row!.verified).toBe(0);
+  });
+
+  test("the key itself is never in a response body, registration or run state", async () => {
+    const data = await registerWith(verifiedDeps, { "x-pixe-verified-key": VERIFIED_KEY });
+    expect(JSON.stringify(data)).not.toContain(VERIFIED_KEY);
+
+    const runId = data.runId as string;
+    const meUrl = `http://x/api/bench/runs/${runId}`;
+    const me = await handleRunApi(
+      new Request(meUrl, { headers: { authorization: `Bearer ${data.runToken as string}` } }),
+      new URL(meUrl),
+      verifiedDeps,
+    );
+    const meData = (await me!.json()) as Record<string, unknown>;
+    expect(meData.verified).toBe(true);
+    expect(JSON.stringify(meData)).not.toContain(VERIFIED_KEY);
+  });
 });
 
 /** The one thing no store method exposes, because nothing in the product moves

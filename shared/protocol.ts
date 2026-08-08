@@ -79,6 +79,17 @@ export interface RunRow {
   created_at: number;
   last_at: number;
   status: RunStatus;
+  /**
+   * `1` iff the registration request carried the maintainer's own secret in
+   * `X-Pixe-Verified-Key`, compared in constant time. Stored as the SQLite/D1
+   * native `INTEGER` rather than `boolean` so this row is exactly what the
+   * database returns; wire responses convert it. This is a vouch about *where
+   * the run was started*, nothing more — it does not check that the declared
+   * model is accurate, only that whoever registered the run held the
+   * deployment's own key. A server with no `PIXE_VERIFIED_KEY` configured can
+   * never produce a `1` here, for anyone.
+   */
+  verified: number;
 }
 
 /**
@@ -131,10 +142,11 @@ export interface RunSolveRow {
 export type NewRunSolve = Omit<RunSolveRow, "id">;
 
 /**
- * One row of the benchmark table. Aggregated per run — two runs of the same
- * model are two data points, not one averaged claim. Folding them into a model
- * leaderboard is a later, deliberate step, and `model`/`provider` are the two
- * columns it will group on.
+ * One row *per run*. This is the unit `/api/bench` aggregates from — two runs
+ * of the same model are two data points, not one averaged claim — and it is
+ * still what `/api/bench?members=1` nests under each model/provider group and
+ * what `/api/bench/points` keys its chart points to. The model-grouped table
+ * itself is `BenchGroupRow`, built by folding these together.
  *
  * `effective_ms_per_solve` is the headline. Everything above it in this
  * interface is identity the run declared about itself; everything from `solved`
@@ -148,6 +160,14 @@ export interface BenchRow {
   provider: string;
   config: string | null;
   status: RunStatus;
+  /**
+   * Whether *this run* was started with the maintainer's registration key. Not
+   * a claim about the model — see `RunRow.verified` — but it is what lets a
+   * model-grouped row say "verified" honestly: a group is verified iff at
+   * least one of its runs is, and the representative is chosen from among them
+   * when it can be.
+   */
+  verified: boolean;
 
   solved: number;
   points: number;
@@ -201,6 +221,87 @@ export interface BenchRow {
 
   first_at: number;
   last_at: number;
+}
+
+/**
+ * One row of the benchmark *table* — one per `(model, provider)`, which is
+ * what a leaderboard actually is. `GET /api/bench` returns these, ranked by
+ * `byGroupProgress`: most of the ladder banked wins, wall clock is the tiebreak.
+ * That ordering is deliberate, not incidental — the ladder is a fixed 500
+ * boards and brutally hard, so how far a model got is the headline and how
+ * fast is what settles a tie, never the other way round.
+ *
+ * Every scalar on this row is the *representative* run's own figure — chosen
+ * as the best run in the group, verified runs preferred outright, never an
+ * average across the group. Averaging `effective_ms_per_solve` across runs of
+ * wildly different skill and luck would produce a number that describes no
+ * run that actually played; naming one real run's numbers is honest about what
+ * they are. `runs` and `verifiedRuns` are the only two fields that describe
+ * the *group* rather than the representative.
+ *
+ * Field order follows the ranking's own priority: identity, then verification,
+ * then group size, then progress (`solves`, out of the fixed 500-board ladder),
+ * then the pace figures that only ever break a tie.
+ */
+export interface BenchGroupRow {
+  model: string;
+  provider: string;
+  /**
+   * True iff *any* run in the group is verified — and when it is, the
+   * representative is chosen from among the verified runs only, so this is
+   * also the representative's own `verified`. A model cannot borrow another
+   * run's vouch: the number the row reports is a real verified run's number.
+   */
+  verified: boolean;
+  /** How many runs declared this exact `(model, provider)` pair. */
+  runs: number;
+  /** Of `runs`, how many were verified. */
+  verifiedRuns: number;
+
+  /** The representative's rungs banked, out of the fixed `LADDER_SIZE` (500)
+   *  total distinct keys — the headline column. */
+  solves: number;
+  totalPoints: number;
+
+  effective_ms_per_solve: number;
+  median_wall_ms: number;
+  probes_per_solve: number;
+  abandoned: number;
+  abandon_rate: number;
+
+  /** Declared meter *sums* over the representative run's solves — not a mean —
+   *  because "how many tokens did clearing this much of the ladder cost" is
+   *  the number a reader wants beside `solves`. Null when the run reported
+   *  nothing at all for that figure, never zero. */
+  tokensIn: number | null;
+  tokensOut: number | null;
+  costMicro: number | null;
+
+  /** The representative's own setup note. Prose, ranked by nothing. */
+  config: string | null;
+  /**
+   * The furthest chain position the representative's issues reached — cheaply
+   * derivable as `max(idx)` over its solves, already fetched for everything
+   * else on this row. Abandoned boards consume a chain position too, so this
+   * is "how far into the ladder", not "how many boards landed" — `solves` is
+   * that number. Null when the representative has no solves to derive it from,
+   * which cannot currently happen since only scored runs reach this row.
+   */
+  maxRung: number | null;
+
+  /** The representative run's id, so a client can ask `/api/bench/points?run=`
+   *  for its chart series without a second lookup. */
+  run_id: string;
+  first_at: number;
+  last_at: number;
+
+  /**
+   * Present only when the caller asked for it (`?members=1`). Every run in the
+   * group, unfolded, in case a reader wants to see the individual runs behind
+   * a model rather than just its best one. Each member is a full `BenchRow`,
+   * so it carries its own `verified`.
+   */
+  members?: BenchRow[];
 }
 
 /**
@@ -383,6 +484,13 @@ export interface RunRegistered {
   model: string;
   provider: string;
   config: string | null;
+  /**
+   * Whether this registration carried the maintainer's key in
+   * `X-Pixe-Verified-Key`. Sent back so a runner that asked to be verified can
+   * confirm it actually happened rather than assuming from a `201` alone — a
+   * wrong or missing key still registers the run, silently unverified.
+   */
+  verified: boolean;
   /** A stable public *name* for the run's rule dialect, never the salt. */
   dialect: string;
   status: RunStatus;
@@ -396,6 +504,9 @@ export interface RunState {
   model: string;
   provider: string;
   config: string | null;
+  /** Same meaning as `RunRegistered.verified` — fixed at registration and
+   *  unchanged for the run's whole life. */
+  verified: boolean;
   dialect: string;
   status: RunStatus;
   createdAt: number;
@@ -646,9 +757,14 @@ export interface AbandonResult {
   charged: true;
 }
 
-/** GET /api/bench */
+/**
+ * GET /api/bench — one row per `(model, provider)`. `?members=1` adds each
+ * group's individual runs under `BenchGroupRow.members`; the flag is named
+ * `members` rather than `runs` because `?runs=` already means "how many rows
+ * to consider" (the aggregation's own limit, unrelated to this).
+ */
 export interface BenchBody {
-  rows: BenchRow[];
+  rows: BenchGroupRow[];
   /** So the client never hardcodes the same 1_000_000 twice. */
   universe: number;
   /** Solve rows the aggregate saw, and whether that hit the cap. A truncated
@@ -880,16 +996,16 @@ export const projected1mCostUsd = (costPerSolveMicro: number) =>
   (costPerSolveMicro / 1_000_000) * PUZZLE_UNIVERSE;
 
 /**
- * The two rankings, and they answer different questions.
+ * The rankings, and they answer different questions.
  *
  * They live here rather than in `server/bench.ts` because the server sorts the
  * response and the table re-sorts it when a reader toggles a column, and two
  * implementations of "which run is ahead" would eventually disagree about the
  * same rows on the same page.
  *
- * A run that has banked nothing sorts last under both, ahead of any comparison
- * of per-solve figures — dividing by zero solves produces a number, and it is
- * always a flattering one.
+ * A run that has banked nothing sorts last under all of them, ahead of any
+ * comparison of per-solve figures — dividing by zero solves produces a number,
+ * and it is always a flattering one.
  */
 
 /** Throughput. Sorts on effective time rather than the median, which is
@@ -900,6 +1016,51 @@ export function byEffectiveTime(a: BenchRow, b: BenchRow): number {
     a.effective_ms_per_solve - b.effective_ms_per_solve ||
     b.solved - a.solved ||
     a.first_at - b.first_at
+  );
+}
+
+/**
+ * The table's own ranking: progress first, pace as the tiebreak.
+ *
+ * The ladder is a fixed 500 distinct boards and every one of them is brutally
+ * hard, so how far a run got is the fact worth leading with; wall clock only
+ * ever decides between two runs that got equally far. This is also the
+ * ordering used to pick a group's representative run — "most progress, tied
+ * runs broken by pace" is one rule serving both jobs, so a model's row is
+ * always some real run's numbers and never an invented average.
+ *
+ * A single implementation shared by `byProgress` (over `BenchRow`, for
+ * choosing a representative) and `byGroupProgress` (over `BenchGroupRow`, for
+ * the table itself) so the two cannot quietly diverge.
+ */
+function progressOrder(
+  solvedA: number,
+  solvedB: number,
+  effA: number,
+  effB: number,
+  firstA: number,
+  firstB: number,
+): number {
+  if (solvedA === 0 || solvedB === 0) return solvedB - solvedA;
+  return solvedB - solvedA || effA - effB || firstA - firstB;
+}
+
+/** Ranks runs by ladder progress, pace as the tiebreak. Used to choose which
+ *  run in a group best represents it. */
+export function byProgress(a: BenchRow, b: BenchRow): number {
+  return progressOrder(
+    a.solved, b.solved,
+    a.effective_ms_per_solve, b.effective_ms_per_solve,
+    a.first_at, b.first_at,
+  );
+}
+
+/** Same ordering, over the model-grouped row `/api/bench` actually serves. */
+export function byGroupProgress(a: BenchGroupRow, b: BenchGroupRow): number {
+  return progressOrder(
+    a.solves, b.solves,
+    a.effective_ms_per_solve, b.effective_ms_per_solve,
+    a.first_at, b.first_at,
   );
 }
 

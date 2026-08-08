@@ -376,12 +376,19 @@ The chained sequence is the only part that is unforgeable. Everything else is ei
 measurement the server takes for itself — wall clock, probes, `api_calls`, the re-validated
 solve — or cost imposed on an attacker.
 
-Identity is not verified and is not meant to be. A run names its own `model` and
-`provider` at registration and nothing checks either. That is a real weakening: protocol 1
-at least had a person willing to type the label, and protocol 2 does not. **A pixe table is
-therefore a table of runs that claimed to be a model, not of models.** The measured columns
-are honest about what happened; the label on the row is not evidence of who did it.
-`docs/THREAT-MODEL.md` states this at length rather than burying it.
+Identity is not verified, and is not meant to be checked for truth. A run names its own
+`model` and `provider` at registration and nothing checks either against reality. That is a
+real weakening: protocol 1 at least had a person willing to type the label, and protocol 2
+does not. **A pixe table is a table of runs that claimed to be a model.** The measured
+columns are honest about what happened; the label on the row is not evidence of who did it.
+
+The one narrow exception is `verified`: a run started with the maintainer's own registration
+secret (`X-Pixe-Verified-Key`) is marked so, and the model-grouped leaderboard prefers a
+verified run over an unverified one outright when picking which run represents a model. That
+proves where a run was started, not that its `model` label is accurate — it is a vouch about
+provenance, not an identity check, and the overwhelming majority of runs have no reason or
+ability to carry it. `docs/THREAT-MODEL.md` states all of this at length rather than burying
+it.
 
 Tokens and cost are self-reported, optional, and rank nothing. Attempts to verify them do
 not generalise across the provider landscape agents actually use — subscriptions, routers,

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildBenchRows, summariseFromPoints, timeLedger, type BenchStore } from "./bench";
+import { buildBenchGroups, buildBenchRows, summariseFromPoints, timeLedger, type BenchStore } from "./bench";
 import { ISSUE_TTL_MS, type IssueSpan, type RunRow } from "./store";
 import type { ChartPoint } from "../shared/protocol";
 
@@ -13,6 +13,7 @@ const run = (id: string, over: Partial<RunRow> = {}): RunRow => ({
   created_at: 1_000,
   last_at: 2_000,
   status: "closed",
+  verified: 0,
   ...over,
 });
 
@@ -168,5 +169,128 @@ describe("declared fields", () => {
     expect(row.tokens_per_solve).toBeNull();
     expect(row.cost_per_solve_micro).toBeNull();
     expect(row.projected_1m_cost_usd).toBeNull();
+  });
+});
+
+describe("grouping — one row per (model, provider)", () => {
+  // No issue ledgers in any of these: `effective_ms_per_solve` falls back to
+  // mean solved time, which is exactly what these tests want to compare on.
+  const emptyLedgers: BenchStore = {
+    runs: async () => [],
+    allSolvesForCharts: async () => [],
+    issueDurations: async () => [],
+  };
+
+  const group = async (runs: RunRow[], solves: ChartPoint[], includeMembers = false) => {
+    const runRows = await buildBenchRows(emptyLedgers, runs, solves);
+    return buildBenchGroups(runRows, solves, includeMembers);
+  };
+
+  test("two runs of the same model and provider fold into one row", async () => {
+    const a = run("a", { model: "gpt-x", provider: "openai" });
+    const b = run("b", { model: "gpt-x", provider: "openai" });
+    const solves = [solve("a", 0, 1_000), solve("b", 0, 1_000)];
+    const rows = await group([a, b], solves);
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.runs).toBe(2);
+  });
+
+  test("same model, different provider, stays two rows", async () => {
+    const a = run("a", { model: "gpt-x", provider: "openai" });
+    const b = run("b", { model: "gpt-x", provider: "azure" });
+    const solves = [solve("a", 0, 1_000), solve("b", 0, 1_000)];
+    const rows = await group([a, b], solves);
+    expect(rows.length).toBe(2);
+  });
+
+  test("within an unverified group, more solves wins the representative slot", async () => {
+    const ahead = run("ahead", { model: "gpt-x", provider: "openai", verified: 0 });
+    const behind = run("behind", { model: "gpt-x", provider: "openai", verified: 0 });
+    const solves = [
+      ...[0, 1, 2].map((i) => solve("ahead", i, 9_000)),
+      ...[0].map((i) => solve("behind", i, 1_000)),
+    ];
+    const rows = await group([ahead, behind], solves);
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.run_id).toBe("ahead");
+    expect(rows[0]!.solves).toBe(3);
+    expect(rows[0]!.verified).toBe(false);
+    expect(rows[0]!.verifiedRuns).toBe(0);
+  });
+
+  /**
+   * The rule the whole feature exists to state: a verified run represents its
+   * model even when an unverified sibling banked far more. Letting the bigger
+   * unverified number win would make "verified" decorative — a badge that
+   * never actually changes which numbers a reader sees.
+   */
+  test("a verified run represents the group even with far fewer solves", async () => {
+    const bigUnverified = run("big", { model: "gpt-x", provider: "openai", verified: 0 });
+    const smallVerified = run("small", { model: "gpt-x", provider: "openai", verified: 1 });
+    const solves = [
+      ...Array.from({ length: 40 }, (_, i) => solve("big", i, 5_000)),
+      ...Array.from({ length: 4 }, (_, i) => solve("small", i, 5_000)),
+    ];
+    const rows = await group([bigUnverified, smallVerified], solves);
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.run_id).toBe("small");
+    expect(rows[0]!.verified).toBe(true);
+    expect(rows[0]!.solves).toBe(4);
+    expect(rows[0]!.runs).toBe(2);
+    expect(rows[0]!.verifiedRuns).toBe(1);
+  });
+
+  test("within a verified pool, ties on solves break on effective time", async () => {
+    const slow = run("slow", { model: "gpt-x", provider: "openai", verified: 1 });
+    const fast = run("fast", { model: "gpt-x", provider: "openai", verified: 1 });
+    const solves = [
+      ...[0, 1].map((i) => solve("slow", i, 20_000)),
+      ...[0, 1].map((i) => solve("fast", i, 4_000)),
+    ];
+    const rows = await group([slow, fast], solves);
+    expect(rows[0]!.run_id).toBe("fast");
+  });
+
+  test("declared meter figures are summed for the representative, not averaged", async () => {
+    const a = run("a", { model: "gpt-x", provider: "openai" });
+    const solves = [
+      solve("a", 0, 1_000, { tokens_in: 100, tokens_out: 20, cost_micro: 500 }),
+      solve("a", 3, 1_000, { tokens_in: 200, tokens_out: 30, cost_micro: 700 }),
+      solve("a", 1, 1_000), // reported nothing; must not count as a zero
+    ];
+    const rows = await group([a], solves);
+    expect(rows[0]!.tokensIn).toBe(300);
+    expect(rows[0]!.tokensOut).toBe(50);
+    expect(rows[0]!.costMicro).toBe(1200);
+    // The furthest chain position reached, not the count of solves (3).
+    expect(rows[0]!.maxRung).toBe(3);
+  });
+
+  test("a run that declared nothing sums to null, never zero", async () => {
+    const a = run("a", { model: "gpt-x", provider: "openai" });
+    const rows = await group([a], [solve("a", 0, 1_000)]);
+    expect(rows[0]!.tokensIn).toBeNull();
+    expect(rows[0]!.tokensOut).toBeNull();
+    expect(rows[0]!.costMicro).toBeNull();
+  });
+
+  test("members are attached only when asked for", async () => {
+    const a = run("a", { model: "gpt-x", provider: "openai" });
+    const solves = [solve("a", 0, 1_000)];
+    expect((await group([a], solves, false))[0]!.members).toBeUndefined();
+    const withMembers = (await group([a], solves, true))[0]!.members;
+    expect(withMembers?.length).toBe(1);
+    expect(withMembers?.[0]!.run_id).toBe("a");
+  });
+
+  test("the table ranks groups by progress, then pace — never averaged across a group", async () => {
+    const leader = run("leader", { model: "model-a", provider: "p" });
+    const behind = run("behind", { model: "model-b", provider: "p" });
+    const solves = [
+      ...[0, 1, 2].map((i) => solve("leader", i, 50_000)),
+      solve("behind", 0, 1_000),
+    ];
+    const rows = await group([leader, behind], solves);
+    expect(rows.map((r) => r.model)).toEqual(["model-a", "model-b"]);
   });
 });
