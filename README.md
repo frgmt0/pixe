@@ -1,12 +1,12 @@
 # pixe
 
-A 64×64 pixel puzzle game, and an agent benchmark built on it. Every board hides its own
+A 64×64 pixel puzzle, run as a pure API benchmark for agents. Every board hides its own
 laws about which colours may go where and which colours can stand next to each other.
-**You are never told any of them.** You paint, the grid reacts, and you work the rest out
-yourself.
+**You are never told any of them.** An agent submits a grid, the API replies with what is
+wrong with it, and the agent works the rest out from there.
 
-Fill all 4096 squares without breaking a single law and you bank the puzzle's points.
-Then you share the art.
+Fill all 4096 squares without breaking a single law and the run banks the puzzle's points.
+Then the finished board gets a public share page.
 
 ## As a benchmark
 
@@ -67,35 +67,33 @@ bun run deploy     # build + wrangler deploy
 bun run db:schema  # regenerate every file in migrations/ after changing SCHEMA
 ```
 
-## How the game teaches without telling
+## How pixe teaches without telling
 
 This is the whole design, so it's worth being precise about it.
 
-There are exactly two feedback channels, and neither one ever names a law:
+There are exactly two feedback channels in the wire protocol, and neither one ever names
+a law:
 
-1. **Cells flash.** Any square that breaks a placement law pulses red-to-black at about
-   1.1 Hz. Legible on top of all eight hues, including Tomato.
-2. **Swatches buzz.** Counting laws (quotas, per-row limits) have no single guilty
-   square to light up, so the *palette swatch* twitches instead. It tells you which
-   colour is implicated, never why.
+1. **`flashes`.** The `{x, y}` coordinates of every cell currently breaking a placement
+   law, returned on every unaccepted submit.
+2. **`buzzes`.** Counting laws (quotas, per-row limits) have no single guilty cell to
+   point at, so this channel names the *colours* implicated instead — never the law,
+   the number, or the direction.
 
 The second channel exists because of a specific dead end: a law like "Mint must cover at
 least 47 cells" can be broken on a completely filled grid with no wrong cell anywhere.
-Without a swatch reaction the player would face a finished canvas, a dark submit button,
-and zero information. `shared/engine.test.ts` asserts the invariant directly — across 60
-puzzles × 12 grid states, **no failing law is ever invisible**.
+Without it, an agent would face a full grid, a rejected submit, and zero information.
+`shared/engine.test.ts` asserts the invariant directly — across 60 puzzles × 12 grid
+states, **no failing law is ever invisible**.
 
 The mirror of that rule matters just as much: a law that is merely *unfinished* must stay
-silent while blank cells remain, or the board would be nagging about requirements the
-player has not been told about and cannot yet have broken. Silence is only a bug once the
-grid is full. The test checks both halves.
+silent while blank cells remain, or the response would be flagging requirements the agent
+has not been told about and cannot yet have broken. Silence is only a signal once the grid
+is full. The test checks both halves.
 
-There are no hints, no teasers, no law counter, and no rule text anywhere during play.
-Rule text exists in exactly two places, both after the fact: the post-solve reveal and
-the public share page. It can't help you there.
-
-A **Field Notes** pad sits in the sidebar for writing down what you deduced. It's yours;
-the game never writes in it.
+There are no hints, no law counter, and no rule text anywhere in the puzzle payload or the
+feedback. Rule text exists in exactly two places, both after the fact: the solve response's
+`reveal` field, and the public share page. Neither can help with the puzzle that produced it.
 
 ## How puzzles are generated
 
@@ -297,9 +295,9 @@ server/     runtime-agnostic API — see "Two runtimes" below
   bench.ts      benchmark aggregation and the two chart endpoints
   index.ts      Bun entry point
 worker/     Cloudflare Workers entry point
-src/        React 19 + Vite + Tailwind v4
-  game/       Board (mutable, diff-based undo), PixelCanvas, palette, toolbar
-  screens/    Bench, Play, SharedArt
+src/        React 19 + Vite + Tailwind v4 — the benchmark table and a guide, both
+            plain clients of the same API an agent uses
+  screens/    Bench, Guide, SharedArt
 docs/       AGENT-PROTOCOL, THREAT-MODEL, BENCH, LANDING-COPY
 public/     agents.txt — how to play, for machines
 ```
@@ -343,12 +341,6 @@ On Cloudflare, static files come straight off the edge with no Worker invocation
 with `index.html`. Sweeping runs on an hourly cron trigger, there being no long-lived
 process to hold a timer: stale throttle records, and issues left open long enough that the
 agent is plainly gone.
-
-**Performance.** The grid is three stacked 64×64 canvases scaled up with
-`image-rendering: pixelated`, not 4096 DOM nodes — every repaint is one 4096-pixel
-`ImageData` write regardless of display size. The board is a plain mutable object outside
-React state. Undo holds 500 per-stroke diffs, because probing and reverting *is* the
-gameplay here.
 
 ## A note on 21st.dev
 

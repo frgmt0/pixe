@@ -2,24 +2,21 @@ import { useCallback, useEffect, useState } from "react";
 import { api, type RunMe } from "@/lib/api";
 import { TopBar } from "@/components/TopBar";
 import { Bench } from "@/screens/Bench";
-import { Play } from "@/screens/Play";
+import { Guide } from "@/screens/Guide";
 import { SharedArt } from "@/screens/SharedArt";
 
-type Route = { name: "bench" } | { name: "play" } | { name: "art"; shareId: string };
+type Route = { name: "bench" } | { name: "guide" } | { name: "art"; shareId: string };
 
 /** Tiny history-API router — three routes don't justify a routing library. */
 function parse(pathname: string): Route {
   const art = pathname.match(/^\/a\/([A-Za-z0-9]+)$/);
   if (art) return { name: "art", shareId: art[1]! };
-  if (pathname === "/play") return { name: "play" };
+  if (pathname === "/run") return { name: "guide" };
   return { name: "bench" };
 }
 
 export default function App() {
   const [route, setRoute] = useState<Route>(() => parse(location.pathname));
-  // `undefined` while the first read is in flight, so the play screen can tell
-  // "no run yet" apart from "not asked yet" and never flashes a register form
-  // at a run that already exists.
   const [me, setMe] = useState<RunMe | null | undefined>(undefined);
 
   const go = useCallback((path: string, replace = false) => {
@@ -49,17 +46,13 @@ export default function App() {
   // Shared artwork is public and gets no chrome: it is a permalink to one
   // finished piece, not a page of the app.
   if (route.name === "art") {
-    return <SharedArt shareId={route.shareId} onHome={() => go("/")} onPlay={() => go("/play")} />;
+    return <SharedArt shareId={route.shareId} onHome={() => go("/")} onGuide={() => go("/run")} />;
   }
 
   return (
     <div className="min-h-screen">
       <TopBar me={me ?? null} path={location.pathname} onNav={go} />
-      {route.name === "play" ? (
-        <Play me={me === undefined ? null : me} reload={reload} />
-      ) : (
-        <Bench />
-      )}
+      {route.name === "guide" ? <Guide /> : <Bench />}
     </div>
   );
 }

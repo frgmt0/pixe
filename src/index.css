@@ -295,34 +295,9 @@
 /* ------------------------------------------------------------------ */
 /* Motion                                                              */
 /*                                                                     */
-/* Almost all of it is gone. What is left is one entrance and the two   */
-/* animations that carry game information rather than decoration.       */
+/* There is no play surface left to give feedback on, so this is down  */
+/* to two plain transitions: an entrance rise and a dialog fade.        */
 /* ------------------------------------------------------------------ */
-
-/*
-  The palette swatch buzz. This is NOT decoration and must not be tuned away:
-  counting laws (quotas, per-row limits) have no guilty cell to light up, so the
-  swatch is their only feedback channel. `shared/engine.test.ts` asserts that no
-  failing law is ever invisible, and this is half of how that holds.
-
-  Toned down from the old ±4deg/±3px flail to a small, fast shiver — still
-  unmistakable in peripheral vision, no longer slapstick.
-*/
-@keyframes swatch-buzz {
-  0%,
-  100% {
-    transform: translateX(0);
-  }
-  25% {
-    transform: translateX(-1.5px);
-  }
-  75% {
-    transform: translateX(1.5px);
-  }
-}
-.animate-buzz {
-  animation: swatch-buzz 0.32s ease-in-out infinite;
-}
 
 @keyframes rise {
   from {
@@ -351,14 +326,6 @@
   animation: pop-in 140ms ease-out both;
 }
 
-/* Kept for `Confetti.tsx`, which is outside this pass. */
-@keyframes confetti-fall {
-  to {
-    transform: translateY(105vh) rotate(var(--spin));
-    opacity: 0;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -366,13 +333,5 @@
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
-  }
-  /* The buzz has to survive as a static offset — it carries real game
-     information, and a reader who suppresses motion still needs to be told
-     which colour is implicated. */
-  .animate-buzz {
-    transform: translateX(1.5px);
-    outline: 1.5px solid var(--bad);
-    outline-offset: 1px;
   }
 }
