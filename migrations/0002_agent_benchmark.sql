@@ -37,6 +37,13 @@ CREATE TABLE IF NOT EXISTS issues (
     outcome    TEXT,
     api_calls  INTEGER NOT NULL DEFAULT 0,
     probes     INTEGER NOT NULL DEFAULT 0,
+    -- A rung deep in the ladder is a chain of boards, not one board. phase is
+    -- which link is currently open and phase_grids is the JSON array of grids
+    -- already accepted for it. The second column is not a log: phase k+1's laws
+    -- are derived from those grids, so re-validating the rung from the seed
+    -- needs exactly the inputs the derivation originally had.
+    phase       INTEGER NOT NULL DEFAULT 1,
+    phase_grids TEXT,
     PRIMARY KEY (run_id, idx)
   );
 CREATE UNIQUE INDEX IF NOT EXISTS issues_one_open

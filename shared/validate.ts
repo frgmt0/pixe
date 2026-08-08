@@ -1,7 +1,6 @@
-import { generate, countBonds, type Puzzle } from "./generate";
+import { countBonds, generate, zmapForScheme, type Puzzle } from "./generate";
 import { CELLS } from "./palette";
-import { evaluateRule, makeCtx, type Grid, type RuleEval } from "./rules";
-import { zoneMap } from "./zones";
+import { buzzedHues, evaluateRule, makeCtx, type Grid, type RuleEval } from "./rules";
 
 export interface Assessment {
   puzzle: Puzzle;
@@ -22,18 +21,6 @@ export interface Assessment {
   solved: boolean;
 }
 
-const zmapCache = new Map<string, Uint8Array>();
-
-function zmapFor(p: Puzzle): Uint8Array {
-  let m = zmapCache.get(p.key);
-  if (!m) {
-    m = zoneMap(p.scheme);
-    if (zmapCache.size > 256) zmapCache.clear();
-    zmapCache.set(p.key, m);
-  }
-  return m;
-}
-
 /**
  * The one evaluation path. The client runs it on every stroke to drive the
  * glow, and the server runs it on submit. Identical code, so a submission can
@@ -41,7 +28,12 @@ function zmapFor(p: Puzzle): Uint8Array {
  */
 export function assess(key: string, grid: Grid): Assessment {
   const { puzzle } = generate(key);
-  const zmap = zmapFor(puzzle);
+  return assessAgainst(puzzle, grid);
+}
+
+/** The same verdict, for a puzzle already in hand — every phase past the first. */
+export function assessAgainst(puzzle: Puzzle, grid: Grid): Assessment {
+  const zmap = zmapForScheme(`${puzzle.key}:${puzzle.phase}:${JSON.stringify(puzzle.scheme)}`, puzzle.scheme);
   const ctx = makeCtx(grid, zmap);
 
   const evals: RuleEval[] = [];
@@ -55,7 +47,7 @@ export function assess(key: string, grid: Grid): Assessment {
     if (ev.status === "ok") continue;
     allOk = false;
     for (const c of ev.violations) badCells.add(c);
-    if (ev.hue !== null) hotHues.add(ev.hue);
+    for (const h of buzzedHues(ev)) hotHues.add(h);
   }
 
   const filled = CELLS - ctx.empties;

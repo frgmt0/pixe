@@ -25,7 +25,8 @@
  */
 
 import { decodeGrid, encodeGrid } from "../shared/codec";
-import { assessDialect, dialectPuzzle, newDialectSalt } from "../shared/dialect";
+import { assessPhase, dialectPhase, newDialectSalt } from "../shared/dialect";
+import { LADDER_SIZE, phaseCountFor } from "../shared/generate";
 import { CELLS, GRID } from "../shared/palette";
 import {
   boardPalette,
@@ -42,6 +43,7 @@ import {
   type SubmitAccepted,
   type SubmitRejected,
 } from "../shared/protocol";
+import { buzzedHues, type Grid } from "../shared/rules";
 import type { Assessment } from "../shared/validate";
 import { hmac, randB64, randHex, sameString, sha256Hex } from "./crypto";
 import type { IssueRow, NewRunSolve, RunRow, Store } from "./store";
@@ -53,15 +55,19 @@ export interface RunDeps {
   secure: boolean;
 }
 
-/** `isValidKey` accepts L1..L999999, so this is the real width of the ladder. */
-const LADDER_MAX = 999_999;
+/** The width of the ladder, defined once in `shared/generate.ts`. */
+const LADDER_MAX = LADDER_SIZE;
 
 /**
  * Submitting is the feedback oracle, so it gets a budget. Generous for real
  * deduction — a careful agent settles a board in tens of submits, not hundreds —
  * and far too small to walk a solver to the law set one cell at a time.
+ *
+ * Charged per *phase*, not per rung: a three-phase rung is three boards' worth
+ * of deduction and clipping it to one board's budget would make the top of the
+ * ladder unplayable rather than hard.
  */
-const MAX_CALLS_PER_ISSUE = 600;
+const MAX_CALLS_PER_PHASE = 600;
 
 /**
  * Abandoning a puzzle you do not like is allowed but must cost more than
@@ -163,25 +169,32 @@ const noRun = () =>
 /**
  * The difficulty band for chain position `idx`.
  *
- * A uniform draw over 1..999999 would put every puzzle in the generator's top
- * tier from the first one, which is both a brutal opening and a dead benchmark —
- * the most interesting signal on the chart is wall clock against chain
- * position, and that curve needs somewhere to start. So the band's ceiling
- * widens geometrically with position: positions 0-5 walk the generator's own
- * tier boundaries (1-3, 4-10, 11-25), then the ceiling grows ~35% per puzzle and
- * reaches the full ladder at about position 40.
+ * A uniform draw over the whole ladder would put every puzzle in the
+ * generator's top tier from the first one — three interlocking phases and
+ * eleven exotic laws before an agent has seen a single flash — which is both a
+ * brutal opening and a dead benchmark, since the most interesting signal on the
+ * chart is wall clock against chain position and that curve needs somewhere to
+ * start. So the band's ceiling widens geometrically with position: positions
+ * 0-5 walk the generator's own tier boundaries, then the ceiling grows ~18% per
+ * puzzle and reaches the full ladder at about position 24.
  *
- * Widening rather than sliding, deliberately: the floor stays at 26 so a long
- * run keeps drawing from the whole space rather than marching off into a corner
- * of it, and the draw stays unpredictable because the band is public but the
- * HMAC that picks within it is not.
+ * Every bound is a fraction of `LADDER_SIZE` rather than a literal rung number,
+ * so renumbering the ladder moves this curve with it instead of stranding the
+ * top half of the boards out of reach.
+ *
+ * Widening rather than sliding, deliberately: the floor stays low so a long run
+ * keeps drawing from the whole space rather than marching off into a corner of
+ * it, and the draw stays unpredictable because the band is public but the HMAC
+ * that picks within it is not.
  */
 export function bandFor(idx: number): { lo: number; hi: number } {
-  if (idx <= 0) return { lo: 1, hi: 3 };
-  if (idx <= 2) return { lo: 4, hi: 10 };
-  if (idx <= 5) return { lo: 11, hi: 25 };
-  const hi = Math.min(LADDER_MAX, Math.round(25 * Math.pow(1.35, idx - 5)));
-  return { lo: 26, hi: Math.max(27, hi) };
+  const L = LADDER_MAX;
+  if (idx <= 0) return { lo: 1, hi: Math.max(3, Math.round(L * 0.006)) };
+  if (idx <= 2) return { lo: 4, hi: Math.max(10, Math.round(L * 0.02)) };
+  if (idx <= 5) return { lo: 11, hi: Math.max(25, Math.round(L * 0.05)) };
+  const floor = Math.max(26, Math.round(L * 0.05) + 1);
+  const hi = Math.min(L, Math.round(floor * Math.pow(1.18, idx - 5)));
+  return { lo: floor, hi: Math.max(floor + 1, hi) };
 }
 
 /**
@@ -261,8 +274,8 @@ export async function nextKey(store: Store, run: RunRow, idx: number): Promise<s
  * and the rules. What is here is structure — how big the board is, which
  * colours exist, what the rung is worth — none of which narrows the law space.
  */
-function puzzlePayload(run: RunRow, issue: IssueRow): PuzzleIssued {
-  const { puzzle } = dialectPuzzle(run.dialect, issue.puzzle_key);
+function puzzlePayload(run: RunRow, issue: IssueRow, phase = phaseOf(issue), priors = priorsOf(issue)): PuzzleIssued {
+  const { puzzle } = dialectPhase(run.dialect, issue.puzzle_key, phase, priors);
   return {
     protocol: PROTOCOL_VERSION,
     runId: run.id,
@@ -277,7 +290,53 @@ function puzzlePayload(run: RunRow, issue: IssueRow): PuzzleIssued {
     points: puzzle.points,
     issuedAt: issue.issued_at,
     rowMajor: true,
+    phase: puzzle.phase,
+    phases: puzzle.phases,
+    locked: puzzle.locked,
   };
+}
+
+/** Which link of the rung is open. A single-phase rung never leaves 1. */
+const phaseOf = (issue: IssueRow): number => Math.max(1, issue.phase || 1);
+
+/**
+ * The accepted grids for every phase of this rung that is already finished.
+ *
+ * These are the derivation inputs for the phase currently open, so this is not
+ * a log — it is state the laws depend on, and the reason `phase_grids` is a
+ * column rather than something recomputed.
+ */
+function priorsOf(issue: IssueRow): Grid[] {
+  if (!issue.phase_grids) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(issue.phase_grids);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const out: Grid[] = [];
+  for (const s of parsed) {
+    const g = decodeGrid(s);
+    if (g) out.push(g);
+  }
+  return out;
+}
+
+/**
+ * What the whole rung pays: the sum over its phases, each computed from that
+ * phase's own rule weights.
+ *
+ * Rebuilt from the seed and the accepted grids rather than accumulated as the
+ * agent goes, so the figure a rung banks is derived by the same code path that
+ * derived the boards, and a tampered column could not change it.
+ */
+function rungPoints(salt: string, key: string, grids: Grid[]): number {
+  let total = 0;
+  for (let p = 1; p <= grids.length; p++) {
+    total += dialectPhase(salt, key, p, grids.slice(0, p - 1)).puzzle.points;
+  }
+  return total;
 }
 
 /**
@@ -309,7 +368,7 @@ function feedbackFor(a: Assessment) {
   for (const ev of a.evals) {
     if (ev.status !== "broken") continue;
     for (const c of ev.violations) flashing.add(c);
-    if (ev.hue !== null) buzzing.add(ev.hue);
+    for (const h of buzzedHues(ev)) buzzing.add(h);
   }
   return feedbackFrom(flashing, buzzing);
 }
@@ -402,7 +461,15 @@ export async function getRun(req: Request, id: string, deps: RunDeps): Promise<R
     solved: solves.length,
     points: solves.reduce((s, r) => s + r.points, 0),
     bonds: solves.reduce((s, r) => s + r.bonds, 0),
-    open: open ? { idx: open.idx, key: open.puzzle_key, issuedAt: open.issued_at } : null,
+    open: open
+      ? {
+          idx: open.idx,
+          key: open.puzzle_key,
+          issuedAt: open.issued_at,
+          phase: phaseOf(open),
+          phases: phaseCountFor(open.puzzle_key),
+        }
+      : null,
   };
   return json(body);
 }
@@ -430,6 +497,10 @@ export async function postNext(req: Request, id: string, deps: RunDeps): Promise
   const open = await store.openIssue(run.id);
   if (open) {
     await store.bumpCalls(run.id, open.idx);
+    // The payload rides along so a runner that crashed mid-rung can pick the
+    // board back up. It reveals nothing `next` would not have: no seed, no
+    // laws — and on a later phase it carries the locked cells, which the agent
+    // has to have and cannot otherwise recover.
     return json(
       {
         error: `Rung ${open.idx} is still open. Solve it, or POST .../abandon to drop it.`,
@@ -437,6 +508,9 @@ export async function postNext(req: Request, id: string, deps: RunDeps): Promise
         idx: open.idx,
         key: open.puzzle_key,
         issuedAt: open.issued_at,
+        phase: phaseOf(open),
+        phases: phaseCountFor(open.puzzle_key),
+        open: puzzlePayload(run, open),
       },
       { status: 409 },
     );
@@ -520,12 +594,17 @@ export async function postSubmit(req: Request, id: string, deps: RunDeps): Promi
     return fail(404, "No open puzzle. POST .../next for one.", "no_open_issue");
   }
 
+  const phase = phaseOf(issue);
+  const phases = phaseCountFor(issue.puzzle_key);
+  const priors = priorsOf(issue);
+
   await store.bumpCalls(run.id, issue.idx);
   const calls = await store.callCount(run.id, issue.idx);
-  if (calls > MAX_CALLS_PER_ISSUE) {
+  const budget = MAX_CALLS_PER_PHASE * phases;
+  if (calls > budget) {
     return fail(
       429,
-      `This puzzle has had its ${MAX_CALLS_PER_ISSUE} round trips. Abandon it, or finish it in one.`,
+      `This rung has had its ${budget} round trips. Abandon it, or finish it in one.`,
       "rate_limited",
     );
   }
@@ -535,10 +614,11 @@ export async function postSubmit(req: Request, id: string, deps: RunDeps): Promi
   const { grid, meter } = parsed.value;
 
   const now = Date.now();
-  // Re-derived from the run's dialect and the key, then re-validated with the
-  // same shared engine every other caller uses. Nothing about the verdict comes
-  // from the request except the pixels.
-  const result = assessDialect(run.dialect, issue.puzzle_key, grid);
+  // Re-derived from the run's dialect, the key, the phase and the agent's own
+  // accepted grids for the phases before it, then re-validated with the same
+  // shared engine every other caller uses. Nothing about the verdict comes from
+  // the request except the pixels.
+  const result = assessPhase(run.dialect, issue.puzzle_key, phase, priors, grid);
 
   if (!result.solved) {
     // A rejected submit taught the agent something, so it costs a probe. The
@@ -551,6 +631,8 @@ export async function postSubmit(req: Request, id: string, deps: RunDeps): Promi
       accepted: false,
       idx: issue.idx,
       key: issue.puzzle_key,
+      phase,
+      phases,
       filled: result.filled,
       empty: result.empty,
       feedback: feedbackFor(result),
@@ -561,6 +643,52 @@ export async function postSubmit(req: Request, id: string, deps: RunDeps): Promi
     return json(body);
   }
 
+  const accepted = [...priors, Int8Array.from(grid)];
+  const probes = await store.probeCount(run.id, issue.idx);
+
+  /* --- a phase handoff, not the end of the rung --------------------- */
+  if (phase < phases) {
+    // The grid is banked into the issue, the phase counter moves, and the next
+    // board is derived from what was just accepted and returned in this same
+    // response. The issue stays open and `issued_at` is untouched, so the clock
+    // spans the rung.
+    await store.advancePhase(
+      run.id,
+      issue.idx,
+      phase + 1,
+      JSON.stringify(accepted.map((g) => encodeGrid(g))),
+    );
+    await store.touchRun(run.id, now);
+    const solves = await store.runSolves(run.id);
+    const body: SubmitAccepted = {
+      accepted: true,
+      idx: issue.idx,
+      key: issue.puzzle_key,
+      phase,
+      phases,
+      rungComplete: false,
+      alreadySolved: false,
+      phasePoints: result.puzzle.points,
+      points: 0,
+      bonds: result.bonds,
+      parBonds: result.puzzle.parBonds,
+      difficulty: Math.round(result.puzzle.difficulty),
+      shareId: null,
+      wallMs: Math.max(0, now - issue.issued_at),
+      apiCalls: calls,
+      probes,
+      solved: solves.length,
+      totalPoints: solves.reduce((s, r) => s + r.points, 0),
+      next: puzzlePayload(run, issue, phase + 1, accepted),
+      // No reveal until the rung is banked: the laws of phase 1 are still doing
+      // work, because phase 2's board was derived from the answer to them.
+      reveal: null,
+    };
+    return json(body);
+  }
+
+  /* --- the final phase: bank the rung ------------------------------- */
+
   // Idempotent: the check and the insert are not in one transaction, so two
   // submissions racing each other must not both bank, and a write that commits
   // without answering must stay retryable.
@@ -569,9 +697,13 @@ export async function postSubmit(req: Request, id: string, deps: RunDeps): Promi
     const solves = await store.runSolves(run.id);
     const body: SubmitAccepted = {
       accepted: true,
-      alreadySolved: true,
       idx: existing.idx,
       key: existing.puzzle_key,
+      phase,
+      phases,
+      rungComplete: true,
+      alreadySolved: true,
+      phasePoints: result.puzzle.points,
       points: 0,
       bonds: existing.bonds,
       parBonds: result.puzzle.parBonds,
@@ -582,6 +714,7 @@ export async function postSubmit(req: Request, id: string, deps: RunDeps): Promi
       probes: existing.probes,
       solved: solves.length,
       totalPoints: solves.reduce((s, r) => s + r.points, 0),
+      next: null,
       reveal: null,
     };
     return json(body);
@@ -591,15 +724,19 @@ export async function postSubmit(req: Request, id: string, deps: RunDeps): Promi
     run_id: run.id,
     idx: issue.idx,
     puzzle_key: issue.puzzle_key,
-    points: result.puzzle.points,
+    // Every phase's points, summed — and recomputed here from the seed and the
+    // accepted grids rather than accumulated across requests, so the figure a
+    // rung banks comes out of the same code that derived the boards.
+    points: rungPoints(run.dialect, issue.puzzle_key, accepted),
     bonds: result.bonds,
     difficulty: Math.round(result.puzzle.difficulty),
     wall_ms: Math.max(0, now - issue.issued_at),
     api_calls: calls,
-    probes: await store.probeCount(run.id, issue.idx),
+    probes,
     tokens_in: meter?.tokensIn ?? null,
     tokens_out: meter?.tokensOut ?? null,
     cost_micro: meter?.costMicro ?? null,
+    // The final phase's grid is the art, and the term the chain digests.
     art: encodeGrid(grid),
     share_id: shareId(),
     created_at: now,
@@ -611,9 +748,13 @@ export async function postSubmit(req: Request, id: string, deps: RunDeps): Promi
   const solves = await store.runSolves(run.id);
   const body: SubmitAccepted = {
     accepted: true,
-    alreadySolved: false,
     idx: solve.idx,
     key: solve.puzzle_key,
+    phase,
+    phases,
+    rungComplete: true,
+    alreadySolved: false,
+    phasePoints: result.puzzle.points,
     points: solve.points,
     bonds: solve.bonds,
     parBonds: result.puzzle.parBonds,
@@ -624,12 +765,23 @@ export async function postSubmit(req: Request, id: string, deps: RunDeps): Promi
     probes: solve.probes,
     solved: solves.length,
     totalPoints: solves.reduce((s, r) => s + r.points, 0),
-    // The post-solve reveal. Safe now and only now: this board is banked, and
-    // the next key is unreachable without the run secret regardless of what the
-    // agent learns about this one.
-    reveal: { title: result.puzzle.title, scheme: result.puzzle.scheme, rules: result.puzzle.rules },
+    next: null,
+    // The post-solve reveal, and every phase of it at once. Safe now and only
+    // now: this rung is banked, and the next key is unreachable without the run
+    // secret regardless of what the agent learns about this one.
+    reveal: revealFor(run.dialect, issue.puzzle_key, accepted),
   };
   return json(body);
+}
+
+/** Every phase's laws, in order, for the response that banks the rung. */
+function revealFor(salt: string, key: string, grids: Grid[]): SubmitAccepted["reveal"] {
+  const phases = grids.map((_, k) => {
+    const { puzzle } = dialectPhase(salt, key, k + 1, grids.slice(0, k));
+    return { phase: k + 1, title: puzzle.title, scheme: puzzle.scheme, rules: puzzle.rules as unknown[] };
+  });
+  const last = phases[phases.length - 1]!;
+  return { title: last.title, scheme: last.scheme, rules: last.rules, phases };
 }
 
 /* ------------------------------------------------------------------ */

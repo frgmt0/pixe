@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { assessDialect, dialectPuzzle, isDialectSalt, newDialectSalt } from "./dialect";
-import { generate, ladderKey } from "./generate";
+import { generate, ladderKey, POINTS_MAX, POINTS_MIN } from "./generate";
 import { CELLS, GRID, HUE_COUNT } from "./palette";
 import { ruleText, type Rule } from "./rules";
 import { zoneCount, zoneMap } from "./zones";
@@ -130,9 +130,9 @@ describe("solvability", () => {
       for (const salt of SALTS) {
         const { puzzle } = dialectPuzzle(salt, key);
         expect(puzzle.rules.length).toBeGreaterThanOrEqual(2);
-        expect(puzzle.rules.length).toBeLessThanOrEqual(14);
-        expect(puzzle.points).toBeGreaterThanOrEqual(3);
-        expect(puzzle.points).toBeLessThanOrEqual(7);
+        expect(puzzle.rules.length).toBeLessThanOrEqual(24);
+        expect(puzzle.points).toBeGreaterThanOrEqual(POINTS_MIN);
+        expect(puzzle.points).toBeLessThanOrEqual(POINTS_MAX);
         expect(puzzle.hueSet.length).toBeGreaterThanOrEqual(2);
         const zoneRules = puzzle.rules.filter((r) => r.t === "zone");
         expect(zoneRules.length).toBe(zoneCount(puzzle.scheme));
@@ -267,6 +267,10 @@ describe("dialects stay hostile to no-thought fills", () => {
       (x, y) => (x + y) >> 2,
       (x, y) => y >> 2,
       (x, y) => x >> 2,
+      // The three the arithmetic families made dangerous. See engine.test.ts.
+      (x, y) => x ^ y,
+      (x, y) => x * y,
+      (x, y) => (x * 3 + y * 5) >> 1,
     ];
     for (const key of KEYS) {
       for (const salt of SALTS) {

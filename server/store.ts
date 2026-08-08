@@ -60,6 +60,12 @@ export interface Store {
   issueAt(runId: string, idx: number): Promise<IssueRow | null>;
   insertIssue(runId: string, idx: number, key: string, now: number): Promise<IssueRow>;
   closeIssue(runId: string, idx: number, now: number, outcome: string): Promise<void>;
+  /**
+   * Move a multi-phase rung on to its next phase, banking the grid just
+   * accepted. The issue stays open and `issued_at` is untouched, because the
+   * clock spans the whole rung rather than restarting at every link.
+   */
+  advancePhase(runId: string, idx: number, phase: number, grids: string): Promise<void>;
   nextIdx(runId: string): Promise<number>;
   /** Every issue's timing, so the benchmark can charge for abandoned work. */
   issueDurations(runId: string): Promise<IssueSpan[]>;
@@ -131,6 +137,13 @@ export const SCHEMA: string[] = [
     outcome    TEXT,
     api_calls  INTEGER NOT NULL DEFAULT 0,
     probes     INTEGER NOT NULL DEFAULT 0,
+    -- A rung deep in the ladder is a chain of boards, not one board. phase is
+    -- which link is currently open and phase_grids is the JSON array of grids
+    -- already accepted for it. The second column is not a log: phase k+1's laws
+    -- are derived from those grids, so re-validating the rung from the seed
+    -- needs exactly the inputs the derivation originally had.
+    phase       INTEGER NOT NULL DEFAULT 1,
+    phase_grids TEXT,
     PRIMARY KEY (run_id, idx)
   )`,
 
@@ -195,6 +208,12 @@ export const SQL = {
   closeIssue:
     `UPDATE issues SET closed_at = ?, outcome = ?
      WHERE run_id = ? AND idx = ? AND closed_at IS NULL`,
+  // Deliberately does not touch `issued_at`. A rung's wall clock spans every
+  // phase of it; restarting the clock at a handoff would make a three-phase
+  // board look like three easy ones.
+  advancePhase:
+    `UPDATE issues SET phase = ?, phase_grids = ?
+     WHERE run_id = ? AND idx = ? AND closed_at IS NULL`,
   nextIdx: "SELECT COALESCE(MAX(idx) + 1, 0) AS n FROM issues WHERE run_id = ?",
   issueDurations:
     "SELECT idx, issued_at, closed_at, outcome FROM issues WHERE run_id = ? ORDER BY idx",
@@ -230,13 +249,23 @@ export const SQL = {
 
   // `r.dialect` rides along so the share page can reveal the laws this run
   // actually fought. It is server-side only — see the note on ArtRow.
+  //
+  // `i.phase_grids` rides along for the same reason one step further in: a
+  // multi-phase rung stores its *final* phase as the art, and that phase's laws
+  // were derived from the grids that came before it. Left-joined because the
+  // issue is closed rather than deleted, and because a rung that predates the
+  // phase columns has nothing there to find.
   artByShare:
-    `SELECT s.*, r.model, r.provider, r.config, r.dialect
-     FROM run_solves s JOIN runs r ON r.id = s.run_id
+    `SELECT s.*, r.model, r.provider, r.config, r.dialect, i.phase_grids
+     FROM run_solves s
+     JOIN runs r ON r.id = s.run_id
+     LEFT JOIN issues i ON i.run_id = s.run_id AND i.idx = s.idx
      WHERE s.share_id = ?`,
   recentArt:
-    `SELECT s.*, r.model, r.provider, r.config, r.dialect
-     FROM run_solves s JOIN runs r ON r.id = s.run_id
+    `SELECT s.*, r.model, r.provider, r.config, r.dialect, i.phase_grids
+     FROM run_solves s
+     JOIN runs r ON r.id = s.run_id
+     LEFT JOIN issues i ON i.run_id = s.run_id AND i.idx = s.idx
      ORDER BY s.created_at DESC LIMIT ?`,
 
   attemptCount: "SELECT n FROM attempts WHERE ip = ? AND until > ?",

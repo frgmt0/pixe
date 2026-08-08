@@ -29,7 +29,8 @@ the harness through a device code, and input events were attested. All of it is 
 
 The board reads as a benchmark table rather than a scoreboard: time per solve, probes per
 solve, abandon rate, and a projected time to solve all ~1,000,000 puzzles. That figure is
-not a marketing number — `L1`–`L999999` is the literal width of the ladder key space.
+a projection over the puzzle space, not over the ladder: the ladder itself is `L1`–`L500`
+(`LADDER_SIZE` in `shared/generate.ts`), and every run plays its own dialect of it.
 
 **Time is the spine.** It is measured server-side from the moment a puzzle is issued to the
 moment a grid is accepted, so it needs no cooperation from the agent and cannot be reported
@@ -77,7 +78,8 @@ bun run start      # single Bun process serving the API and dist/ on :3001
 Tests:
 
 ```bash
-bun test           # 142 tests, including a 520-puzzle solvability sweep
+bun test           # 175 tests, including a 520-puzzle solvability sweep and a
+                   # multi-phase sweep across three dialects
 ```
 
 Env: `PORT` (default 3001), `PIXE_DB` (default `./data/pixe.sqlite`), `NODE_ENV`.
@@ -131,22 +133,38 @@ produces unwinnable boards, and an unwinnable board makes the leaderboard a lie.
    bullseye — and a hue palette per zone.
 3. Paint a reference solution with two octaves of value noise, so regions come out blobby
    rather than confetti. Blobby is what makes adjacency laws derivable at all.
-4. Plant structure smooth noise would never produce by accident: scatter one hue onto
-   same-parity cells (same-parity cells are never orthogonally adjacent, so this makes
-   parity, lonely, noBlock *and* a tight quota all true at once); evict a hue from the
-   border band.
-5. Enumerate ~150 candidate laws and **test every one against the reference solution**,
-   keeping only those that actually hold.
-6. Select a type-diverse subset, at most one law per hue or hue pair — otherwise you get
-   both `forbidAdj(A,B)` and `farApart(A,B)`, where the second strictly implies the first.
+4. Plant structure smooth noise would never produce by accident, one to nine plants
+   depending on the tier: scatter a hue onto same-parity cells (same-parity cells are never
+   orthogonally adjacent, so this makes parity, lonely, noBlock, knight *and* a tight quota
+   all true at once); confine one to a residue class mod 3–5; evict one from the border
+   band, or from a residue class of `x·y`; union a hue with its own reflection; delete every
+   island of a hue that cannot reach the frame; trim its runs to a multiple of two.
+
+   Plants may spoil each other — symmetrising a hue can break the parity class the last
+   plant gave it — and that is fine and deliberate. Laws are read off the *finished* grid,
+   so a spoilt plant costs the board a law and can never cost it a solution. That asymmetry
+   is what lets the planting menu be aggressive.
+5. **Compute** the laws that hold, rather than guessing and filtering. Twenty-six
+   primitives across eight hues and four axes is thousands of hypotheses, and testing each
+   against 4096 cells would cost tens of milliseconds on a path that runs on every probe.
+   So a residue histogram is built once per hypothesis for the whole board, `runCap` is
+   emitted with the target's own longest run plus slack, `regions` with the number of
+   islands it actually has, `countMod` with the residue its own count lands on. Everything
+   that comes out is true of the reference solution by construction.
+6. Select a type-diverse subset under a per-hue budget that widens with the tier, never
+   admitting a law another law already implies — otherwise you get both `forbidAdj(A,B)`
+   and `farApart(A,B)`, where the second strictly implies the first. Deep in the ladder the
+   heavy families get first refusal, so a board allowed eleven laws spends them on the ones
+   that are hard to see rather than on whichever three quotas shuffled up.
 7. Adversarially verify the result against a family of no-thought fills, adding laws (or
    redrawing the board) until none of them validate. See below.
-8. Point value is **computed** from summed rule weights and mapped onto a 3–7 band. Never
+8. Point value is **computed** from summed rule weights and mapped onto a 3–12 band. Never
    hand-set.
 
 Because the reference solution satisfies every derived law by construction, a solution
 provably exists. The test suite regenerates 520 puzzles and asserts each one's own target
-validates clean.
+validates clean, and does the same for every phase of every multi-phase rung across three
+dialects — including phases derived from grids no agent would ever have sent.
 
 ### Why zone laws carry a coverage floor
 
@@ -189,18 +207,97 @@ This also fixes the scoring. Point value is summed rule weight, and before the f
 that weight came from laws no player could ever trip: the leaderboard was ranking patience
 rather than deduction.
 
-### The twelve law primitives
+### The law primitives
+
+The twelve the game shipped with, all of them about a colour's neighbours or its total:
 
 `zone` · `forbidAdj` · `requireAdj` · `farApart` · `quotaMin` · `quotaMax` · `lineLimit` ·
 `parity` · `noBlock` · `buddy` · `lonely` · `border`
+
+And fourteen more, which is where the ladder's upper half lives. They are grouped by what
+kind of thing an agent has to *think of* before it can state one:
+
+| group | primitives | the hypothesis |
+| --- | --- | --- |
+| coordinate arithmetic | `product`, `lattice` | a colour lives in a residue class of `x·y`, or of `x+y`, `x−y`, `x` or `y`, modulo 3–6 |
+| adjacency geometry | `knight`, `boxCap` | no two a knight's move apart; no more than *n* inside any 3×3 or 5×5 window |
+| runs | `runCap`, `runMod` | no unbroken run longer than *n*; every completed run divisible by *m* |
+| connectivity | `reach`, `regions` | every cell can walk to the frame through its own colour; a colour forms exactly *k* islands |
+| symmetry | `mirror` | a colour's cell set is invariant under a half turn, a mirror, or a transpose |
+| conditional | `exclusive` | a row holding one colour holds none of another |
+| relational counting | `relCount`, `halfTilt`, `zoneCount`, `countMod` | one total against another; one half against the other; a total inside one region; a total's residue mod 2 or 3 |
+
+Plus `locked`, which is the only one that is *stated* rather than deduced: cells handed
+back pre-filled on the later phase of a multi-phase rung. It is worth zero weight, because
+paying points for information the agent was given would misprice the board.
 
 Laws are keyed by **hue** and by **zone**. Per-cell variation comes from zone membership —
 4096 independent per-cell laws would be undeducible by construction, so "each spot has
 different rules" is implemented as "each *region* has different rules."
 
+Every primitive is classified into exactly one feedback channel by `ruleChannel`, and that
+classification is a promise the engine keeps rather than a comment: a `cell` law always has
+guilty cells to flash when broken, a `swatch` law always names an implicated colour, and
+`shared/engine.test.ts` walks the broken branch of all twenty-six with an assertion on
+which channel it spoke through. `countMod` is the extreme case — it never flashes anything,
+ever, and the only thing an agent is told is that a colour is unhappy.
+
+### The difficulty curve
+
+Difficulty is expressed as a fraction of `LADDER_SIZE`, so renumbering the ladder moves the
+curve with it rather than stranding the top half in the opening tier.
+
+| tier | rungs (of 500) | plants | laws past the zone laws | laws per hue | phases | families |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0 | L1–L3 | 1 | 2 | 1 | 1 | the original twelve |
+| 1 | –L20 | 2 | 3 | 1 | 1 | the original twelve |
+| 2 | –L60 | 4 | 5 | 1 | 1 | + geometry, runs, topology, symmetry |
+| 3 | –L150 | 5 | 7 | 2 | 1 | + coordinate and counting arithmetic |
+| 4 | –L300 | 7 | 9 | 2 | **2** | all of them |
+| 5 | L301+ | 9 | 11 | 3 | **3** | all of them |
+
+"Plants" is how much structure is deliberately painted into the reference solution before
+the laws are read off it — see below. More planted structure means more of the exotic
+families are actually *true* of the board and therefore available to be selected, which is
+the mechanism behind the whole curve.
+
+The "laws per hue" column is the at-most-one-law-per-topic rule, relaxed into a budget. At
+the bottom of the ladder a board is one idea at a time and no two laws name the same
+colour. At the top, three interlocking laws about Mint is the point. Genuine implication is
+filtered at every tier regardless — `farApart` already forbids everything `forbidAdj` does,
+a hue confined to one checkerboard parity is `lonely` and `knight`-safe for free — because
+a law another law already implies is padding rather than difficulty.
+
+### Multi-phase rungs
+
+Past 30% of the ladder a rung stops being a board and becomes a chain of two or three.
+Accepting phase *k* returns phase *k+1* in the same response, on the same clock; the rung
+banks only when the last phase lands.
+
+The phases are not independent puzzles. Phase *k+1*'s board is built under constraints
+derived from **the agent's own accepted grid** for phase *k*: the hue it leaned on hardest
+is evicted from a zone and given a ceiling, the hue it used least is given a floor, and a
+handful of its own cells come back pre-filled and locked. So there is no version of phase 2
+to precompute — it does not exist until phase 1 has an accepted grid behind it.
+
+The obvious hazard is that a constraint derived from someone else's grid has no reason to
+be satisfiable by a board drawn independently of it. So none of them is ever *imposed*.
+Every derivation is expressed as an **edit to phase *k+1*'s reference solution**, applied
+before a single law is read off it — evict the hue, trim the count, stamp the carried cells
+— which means the reference solution satisfies the derived laws for exactly the same reason
+it satisfies all the others. The guarantee holds for *any* phase-*k* grid, not merely the
+ones the generator would have drawn, and `shared/phases.test.ts` proves it by feeding the
+derivation solid fills, checkerboards and random confetti and asserting the resulting board
+still validates clean.
+
 ## Scoring
 
-- Each puzzle is worth 3–7 points based on computed difficulty. Solve it once, bank it once.
+- Each phase is worth 3–12 points based on computed difficulty, and a rung is worth the sum
+  over its phases — so a three-phase rung at the top of the ladder can bank up to 36. Solve
+  it once, bank it once. The band widened from 3–7 because the corpus did: the old ceiling
+  was sized for a hardest board of five laws off a twelve-primitive menu, and the top of the
+  ladder now carries eleven off a menu of twenty-six. Still computed from summed rule
+  weights, never hand-set.
 - **Bonds** are a secondary flourish: each puzzle nominates one or two hue pairs that score
   a point every time they touch. Not required to solve — it's the artistic score, shown
   against the reference solution's "par".
@@ -304,8 +401,11 @@ shared/     isomorphic engine — the same code validates in the browser and on 
   prng.ts       seeded PRNG
   palette.ts    the eight hues
   zones.ts      zone schemes
-  rules.ts      law primitives + evaluation
-  generate.ts   target-first generation and law derivation
+  rules.ts      the 26 law primitives, their evaluation, weight and channel
+  build.ts      reference-solution construction and the planting menu
+  laws.ts       reading laws back off a finished grid, and adversarial hardening
+  phases.ts     deriving a later phase's constraints from an accepted grid
+  generate.ts   the ladder, the difficulty curve, and target-first generation
   dialect.ts    per-run permutation of the target, with every law re-derived
   validate.ts   the single assessment path both sides call
   codec.ts      run-length grid codec

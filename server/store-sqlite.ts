@@ -51,6 +51,7 @@ export function sqliteStore(path = process.env.PIXE_DB ?? "./data/pixe.sqlite"):
       (await get<IssueRow>(SQL.insertIssue, rid, idx, key, now)) ??
       (await get<IssueRow>(SQL.issueAt, rid, idx))!,
     closeIssue: (rid, idx, now, outcome) => run(SQL.closeIssue, now, outcome, rid, idx),
+    advancePhase: (rid, idx, phase, grids) => run(SQL.advancePhase, phase, grids, rid, idx),
     nextIdx: async (rid) => (await get<{ n: number }>(SQL.nextIdx, rid))?.n ?? 0,
     issueDurations: (rid) => all<IssueSpan>(SQL.issueDurations, rid),
     bumpCalls: (rid, idx) => run(SQL.bumpCalls, rid, idx),

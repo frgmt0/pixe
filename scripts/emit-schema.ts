@@ -123,4 +123,45 @@ await Bun.write(
   ].join("\n"),
 );
 
-console.log(`wrote ${SCHEMA.length} statements to 0001, 0002 and 0003`);
+/**
+ * 0004 is the multi-phase rung.
+ *
+ * A rung deep in the ladder is a chain of boards rather than one board, and the
+ * chain lives on the issue: `phase` is which link is open, `phase_grids` is the
+ * JSON array of grids already accepted for it. The second column is the one
+ * that matters — phase k+1's laws are *derived from* the agent's accepted grid
+ * for phase k, so re-validating a rung from the seed needs exactly the inputs
+ * the derivation originally had. Without it a finished rung could never be
+ * re-checked, and re-checking is the property the anti-cheat story rests on.
+ *
+ * Purely additive, and safe against a live database. Both columns carry
+ * defaults every existing row is already correct under: an issue that predates
+ * this migration is phase 1 with nothing accepted behind it, which is exactly
+ * what a single-phase rung looks like for its whole life.
+ */
+const PHASES = [
+  "ALTER TABLE issues ADD COLUMN phase INTEGER NOT NULL DEFAULT 1;",
+  "ALTER TABLE issues ADD COLUMN phase_grids TEXT;",
+];
+
+await Bun.write(
+  url("0004_multi_phase.sql"),
+  [
+    ...HEADER,
+    "-- Multi-phase rungs: one issue, several boards, one clock. Additive, and",
+    "-- safe to run against a live database — every existing row is already",
+    "-- correct under the defaults.",
+    "--",
+    "--   bunx wrangler d1 execute pixe-db --remote --file migrations/0004_multi_phase.sql",
+    "",
+    ...PHASES,
+    "",
+    "-- The current schema verbatim, so a fresh database ends up identical to a",
+    "-- migrated one.",
+    "",
+    ...body,
+    "",
+  ].join("\n"),
+);
+
+console.log(`wrote ${SCHEMA.length} statements to 0001, 0002, 0003 and 0004`);

@@ -26,8 +26,9 @@ what that costs.
 > counts are whatever the run says they are.
 
 **Wall clock is the spine.** `wall_ms` is the elapsed time from the moment the
-server issued a puzzle to the moment it accepted a solution for it. It is
-measured entirely server-side. It requires nothing from the agent, it cannot be
+server issued a rung to the moment it accepted the solution that banked it —
+which, for a multi-phase rung, spans every one of its phases. It is measured
+entirely server-side. It requires nothing from the agent, it cannot be
 reported low, and the only way to move it is to solve faster — which is the
 thing being measured.
 
@@ -86,17 +87,25 @@ nothing is not a run that spent nothing.
 
 ```
 POST /api/bench/runs               →  {runId, runToken}
-POST /api/bench/runs/:id/next      →  puzzle n, in full
+POST /api/bench/runs/:id/next      →  rung n, phase 1, in full
 POST /api/bench/runs/:id/submit    →  send a grid; get back what is wrong with it
    ↑                                    ↓  repeat until accepted
    └────────────────────────────────────┘
-POST /api/bench/runs/:id/next      →  puzzle n+1, derived from your accepted grid for n
+                                   →  accepted, and if the rung has more phases
+                                      the next one comes back in the SAME
+                                      response, on the same clock (§5a)
+POST /api/bench/runs/:id/next      →  rung n+1, derived from your accepted grid
 ```
 
-Exactly one puzzle is open per run at any time, enforced by a partial unique
+Exactly one rung is open per run at any time, enforced by a partial unique
 index in the database rather than by a check in a route. `next` on an open board
 answers `409`; dropping it is `POST .../abandon`, which is a separate request on
 purpose (§6).
+
+A **rung** and a **board** are not the same thing. Low on the ladder they are:
+one rung, one 64×64 board, one acceptance. From roughly 30% of the way up, a
+rung is a chain of two or three boards — its *phases* — and the rung banks only
+when the last one is accepted. §5a is the whole of it.
 
 The load-bearing detail is that **submit is also the observation channel**. A
 grid that is not yet a solution is not an error: it comes back `200` with the
@@ -179,7 +188,9 @@ POST /api/bench/runs/:id/next        (auth: runToken, empty body)
   "palette": [ { "id": 0, "name": "Tomato", "hex": "#ff4d4d" }, … ],
   "points": 4,
   "issuedAt": 1730000000000,
-  "rowMajor": true }
+  "rowMajor": true,
+  "phase": 1, "phases": 1,
+  "locked": [] }
 ```
 
 That is the whole payload, and the clock starts at `issuedAt`. The issue row —
@@ -192,12 +203,34 @@ and the laws. The laws are the thing being deduced; shipping any of them — eve
 as a count, even as a numeric threshold — would end the benchmark. What is
 present is structure an agent could measure for itself in one round trip anyway.
 
-`409 open_issue` means you already hold a board:
+Three fields carry the phase chain, and all three are entitled information:
+
+- **`phase`** — which board of the rung this is, 1-based.
+- **`phases`** — how many the rung has. You are told this because an agent
+  budgeting a rung needs to know whether accepting this board ends it, and
+  because the number narrows nothing: a phase's laws are not derivable from
+  how many phases there are.
+- **`points`** — what **this phase** is worth. A rung pays the sum over its
+  phases, so a three-phase rung at the top of the ladder can bank far more than
+  any single board's figure.
+- **`locked`** — cells already painted, as `[{ "x": 12, "y": 3, "hue": 5 }, …]`.
+  Empty on phase 1. On a later phase these are cells carried over from **your
+  own accepted grid** for the phase before, and they must come back exactly as
+  given (§5a).
+
+`409 open_issue` means you already hold a rung. The refusal carries the open
+board's whole payload, which is the only way to read a board you already hold —
+it exists so a runner that crashed mid-rung can pick it up again, and on a later
+phase it is the only way to recover `locked`:
 
 ```jsonc
 { "error": "Rung 3 is still open. Solve it, or POST .../abandon to drop it.",
-  "code": "open_issue", "idx": 3, "key": "L57", "issuedAt": 1730000000000 }
+  "code": "open_issue", "idx": 3, "key": "L57", "issuedAt": 1730000000000,
+  "phase": 2, "phases": 3,
+  "open": { …the full PuzzleIssued payload for the open phase… } }
 ```
+
+It reveals nothing `next` would not have. It still costs an `api_call`.
 
 ---
 
@@ -229,11 +262,92 @@ the skill being measured — but running it against a thousand boards at once is
 not a strategy that exists here.
 
 The difficulty band widens with rung position. `bandFor(idx)` starts at `L1–L3`
-and grows roughly 35% per rung past position 5, reaching the whole ladder around
-position 40. The band is public; the HMAC that picks within it is not.
+and grows about 18% per rung past position 5, reaching the whole ladder around
+position 24. Every bound is a fraction of `LADDER_SIZE` in `shared/generate.ts`,
+so renumbering the ladder moves the curve with it. The band is public; the HMAC
+that picks within it is not.
 
 The derivation of record is `keyAt()` and `nextKey()` in `server/runs.ts`, and
 the band is `bandFor()` beside them.
+
+---
+
+## 5a. Phases
+
+A rung low on the ladder is one board. From about 30% of the way up it is two,
+and past about 62% it is three. `phases` on the payload tells you which.
+
+**The phases are one rung, not several puzzles.** One issue, one `idx`, one
+clock — `wall_ms` runs from the moment phase 1 was issued to the moment the
+final phase is accepted, and nothing is banked until then. Accepting phase *k*
+does not close the rung, does not pay points, and does not produce a share id.
+
+**Accepting a phase hands you the next one in the same response.** There is no
+second request, and deliberately so: a handoff that took a round trip would be a
+window in which the rung was solved but not issued, and the only thing that
+could happen in that window is bookkeeping.
+
+```jsonc
+// submit accepted, and the rung continues
+{ "accepted": true, "rungComplete": false,
+  "idx": 4, "key": "L412", "phase": 1, "phases": 3,
+  "phasePoints": 10,          // what the phase you just finished is worth
+  "points": 0,                // nothing is banked yet
+  "shareId": null, "reveal": null,
+  "wallMs": 512300, "apiCalls": 61, "probes": 60,
+  "next": { …the full PuzzleIssued payload for phase 2… } }
+```
+
+### Later phases are derived from your own answer
+
+This is the point of the whole mechanism. Phase *k+1*'s board and laws are a
+deterministic function of the seed **and of the grid you had accepted for phase
+*k***. Concretely, and these are the only derivations:
+
+- the hue you used **most** in phase *k* is **evicted from one zone** of phase
+  *k+1*, so that zone's permit list simply does not contain it;
+- that same hue picks up a **ceiling** computed from how much of it you used;
+- the hue you used **least** picks up a **floor** computed the same way;
+- a handful of **cells are carried over** from your grid and handed back
+  pre-filled, in `locked`.
+
+So there is no version of phase 2 to precompute. It does not exist until phase 1
+has an accepted grid behind it, and a different legal answer to phase 1 produces
+a genuinely different phase 2 — different zone geometry, different laws,
+different locked cells.
+
+### Locked cells
+
+A locked cell must come back with exactly the hue it was given.
+
+- Wrong hue → the cell **flashes**, like any other placement complaint, and the
+  grid is not accepted. It is not a `bad_grid`: the grid was perfectly readable,
+  it was simply wrong in a specific place, and that is what the cell channel is
+  for.
+- Still blank → nothing. A blank is unfinished, not wrong, and the silence rule
+  in §8 applies unchanged.
+
+Locked cells are stated information rather than a hidden law, so they are worth
+no points. They constrain the answer, but paying for something you were handed
+would make a later phase look harder than it is.
+
+### Solvability
+
+Every phase is solvable, for **any** legal answer to the phase before it — not
+merely for the answers the generator would have drawn itself. That is a
+construction, not a hope: no derived constraint is ever imposed on a board.
+Every one of them is applied as an *edit* to phase *k+1*'s reference solution
+before a single law is read off it, so the reference solution satisfies the
+derived laws for exactly the same reason it satisfies all the others.
+`shared/phases.test.ts` proves it by feeding the derivation grids no agent would
+ever send — solid fills, checkerboards, random confetti — and asserting the
+resulting board still validates clean.
+
+### Budget and abandoning
+
+The per-rung request ceiling is **600 × `phases`**, so a three-phase rung gets
+1800. Abandoning works exactly as it does for a single-phase rung: it drops the
+whole rung, mid-phase or not, and the phases already accepted are not banked.
 
 ---
 
@@ -336,7 +450,7 @@ POST /api/bench/runs/:id/submit      (auth: runToken)
 
 ```jsonc
 { "accepted": false,
-  "idx": 0, "key": "L3",
+  "idx": 0, "key": "L3", "phase": 1, "phases": 1,
   "filled": 3900, "empty": 196,
   "feedback": {
     "flashes": [ { "x": 12, "y": 3 }, { "x": 13, "y": 3 } ],
@@ -346,17 +460,29 @@ POST /api/bench/runs/:id/submit      (auth: runToken)
   "apiCalls": 7, "probes": 6 }
 ```
 
-**Solved** — `200`:
+**Accepted** — `200`. One shape for both kinds of acceptance, discriminated by
+`rungComplete`. `next` carries the following phase when there is one (§5a);
+`points`, `shareId` and `reveal` are all withheld until the rung banks.
 
 ```jsonc
-{ "accepted": true, "alreadySolved": false,
-  "idx": 0, "key": "L3",
+{ "accepted": true, "rungComplete": true, "alreadySolved": false,
+  "idx": 0, "key": "L3", "phase": 1, "phases": 1,
+  "phasePoints": 4,
   "points": 4, "bonds": 12, "parBonds": 14, "difficulty": 31,
   "shareId": "…",
   "wallMs": 84120, "apiCalls": 7, "probes": 6,
   "solved": 1, "totalPoints": 4,
-  "reveal": { "title": "…", "scheme": …, "rules": [ … ] } }
+  "next": null,
+  "reveal": { "title": "…", "scheme": …, "rules": [ … ],
+              "phases": [ { "phase": 1, "title": "…", "scheme": …, "rules": [ … ] } ] } }
 ```
+
+`points` is the whole rung: the sum over its phases, each computed from that
+phase's own rule weights and recomputed server-side from the seed and the
+accepted grids rather than accumulated across requests. A phase pays 3–12; a
+three-phase rung can therefore bank up to 36. `reveal.phases` lists every phase
+in order — a multi-phase rung reveals all its laws or none of them, because
+phase 2's board was derived from the answer to phase 1's.
 
 The server re-derives the puzzle from the run's dialect and the key, and re-runs
 the same shared validator every other caller uses, then computes the point value
@@ -378,7 +504,9 @@ listed because of *where it is* or *what it touches*, never because of how many
 of it there are.
 
 **`buzzes`** — the *names* of colours whose counting law is unhappy: a quota, a
-per-line limit, a zone coverage floor. Names rather than ids because the names
+per-line limit, a zone coverage floor, a relationship between two colours'
+totals. A single law may implicate more than one colour, and when it does, all
+of them are named. Names rather than ids because the names
 are what the palette in §4 gave you and what a human reading your logs will
 recognise. This channel exists because of a specific dead end: a law like "Mint
 must cover at least 47 cells" can be broken on a completely filled grid with no
@@ -462,8 +590,12 @@ grid, the server holds the clock.
   "dialect": "d-1a2b3c4d", "status": "open",
   "createdAt": 0, "lastAt": 0,
   "solved": 3, "points": 14, "bonds": 40,
-  "open": { "idx": 3, "key": "L57", "issuedAt": 0 } }
+  "open": { "idx": 3, "key": "L57", "issuedAt": 0, "phase": 2, "phases": 3 } }
 ```
+
+`RunState` names the open phase but not its `locked` cells — those come back
+with the `409` payload from `next` (§4), which is where a crashed runner should
+go to recover a board.
 
 Errors are `{ "error": "<a sentence>", "code": "<machine code>" }`. The codes:
 `bad_request`, `no_run`, `run_closed`, `open_issue`, `no_open_issue`, `bad_grid`,
@@ -479,22 +611,25 @@ a deliberate later step, and `model` + `provider` are the columns it groups on.
 | Limit | Value | What it is for |
 | --- | --- | --- |
 | Runs per IP | 60 / hour | Run creation is unauthenticated |
-| Requests per open puzzle | 600 | The feedback oracle is not a brute-force channel |
+| Requests per open rung | 600 × `phases` | The feedback oracle is not a brute-force channel |
 | Abandon cooldown | 60 s | Dropping a puzzle must cost more than solving it |
 | Issue TTL | 6 h | A crashed run must not hold a board forever |
 
-600 round trips is generous for deduction and far too few to walk a solver to
-the law set one cell at a time. The real deterrent is not the ceiling, it is that
-every probe is counted and published.
+600 round trips per phase is generous for deduction and far too few to walk a
+solver to the law set one cell at a time. The real deterrent is not the ceiling,
+it is that every probe is counted and published.
 
 ---
 
 ## 11. The rules of the benchmark
 
 **A legitimate solve** is a grid you submitted for a puzzle that was issued to
-you, that fills all 4096 cells, and that breaks no law of that board. The server
-re-derives the puzzle and re-runs the same validator every other caller uses. A
-forged grid, an incomplete grid, or a grid one cell off is rejected outright.
+you, that fills all 4096 cells, that leaves every locked cell as it was given,
+and that breaks no law of that board. For a multi-phase rung it is that, once
+per phase, in order. The server re-derives the puzzle — from the seed, the run's
+dialect, the phase, and your own accepted grids for the phases before it — and
+re-runs the same validator every other caller uses. A forged grid, an incomplete
+grid, or a grid one cell off is rejected outright.
 
 **Writing your own solver is encouraged.** That is the skill being measured. Read
 the feedback, deduce the laws, paint accordingly, and go as fast as you can.
@@ -541,7 +676,7 @@ Node built-ins.
 | `RunRow`, `IssueRow`, `RunSolveRow`, `NewRunSolve` | storage rows, mirroring the SQL |
 | `BenchRow`, `ChartPoint`, `ArtRow` | read models |
 | `RegisterRun`, `RunRegistered`, `RunState` | registration |
-| `PuzzleIssued`, `Swatch`, `boardPalette` | the board |
+| `PuzzleIssued`, `Swatch`, `boardPalette`, `LockedCellWire` | the board |
 | `Feedback`, `Flash`, `feedbackFrom` | the two channels |
 | `SubmitBody`, `SubmitResult`, `AbandonResult`, `MeterReport` | play |
 | `parseRegisterRun`, `parseSubmit`, `parseGrid`, `gridRows`, `label` | runtime validators |

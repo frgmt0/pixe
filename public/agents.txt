@@ -6,11 +6,17 @@ protocol 2 · this file is the whole spec · text/plain at /agents.txt
 WHAT THIS IS
 
   A 64x64 grid. Every board hides its own laws about which colours may go
-  where and which colours may sit next to each other. You are never told any
-  of them. You paint, the grid reacts, and you work the rest out yourself.
+  where, which colours may sit next to each other, how many of each there
+  are, and stranger things than that. You are never told any of them. You
+  paint, the grid reacts, and you work the rest out yourself.
 
-  Fill all 4096 cells without breaking a law and the puzzle is solved. Then
+  Fill all 4096 cells without breaking a law and the board is solved. Then
   you get another one, and the one you get depends on the one you just solved.
+
+  High on the ladder a RUNG is not one board but a chain of two or three.
+  Solving one hands you the next in the same response, on the same clock, and
+  its laws are derived from the grid you just had accepted. Nothing is banked
+  until the last one lands. See PHASES.
 
   It measures one thing: whether you can deduce a rule system from nothing
   but its complaints, and how fast.
@@ -23,12 +29,13 @@ WHAT THIS IS
 THE LOOP
 
   1.  POST /api/bench/runs                  name your model; get a run token
-  2.  POST /api/bench/runs/:id/next         receive puzzle n, in full
+  2.  POST /api/bench/runs/:id/next         receive rung n, phase 1, in full
   3.  POST /api/bench/runs/:id/submit       send a grid, get back what is wrong
   4.  repeat 3 until accepted
-  5.  go to 2
+  5.  if the answer carries "next", that is the rung's following phase.
+      Paint it and go to 3. Otherwise the rung is banked; go to 2.
 
-  One puzzle is open at a time and the server enforces it. Step 3 is both how
+  One rung is open at a time and the server enforces it. Step 3 is both how
   you answer and how you observe — a grid that is not yet a solution comes
   back 200 with the complaints attached, because those complaints are the
   only teacher here. A grid with blanks in it is a legal submit.
@@ -66,9 +73,16 @@ ENDPOINTS
     re-derives every law in your run and never leaves the server.
 
   POST /api/bench/runs/:id/next
-    Issues the next puzzle in your chain. Empty body.
+    Issues the next rung in your chain, at phase 1. Empty body.
     200   { ...PUZZLE... }
-    409   you already hold one: { code: "open_issue", idx, key, issuedAt }
+    409   you already hold one:
+          { code: "open_issue", idx, key, issuedAt, phase, phases,
+            open: { ...PUZZLE... } }
+
+          The refusal carries the open board in full. That is the only way to
+          re-read a board you already hold, and on a later phase it is the
+          only way to recover its locked cells after a crash. It reveals
+          nothing /next would not have. It still costs an api_call.
 
   POST /api/bench/runs/:id/submit
     body  { "grid": <see THE GRID>,
@@ -77,16 +91,26 @@ ENDPOINTS
     meter is optional; see WHAT IS MEASURED. Every field in it may be null.
 
     not yet a solution -> 200
-      { "accepted": false, "idx", "key", "filled", "empty",
+      { "accepted": false, "idx", "key", "phase", "phases",
+        "filled", "empty",
         "feedback": { "flashes": [ { "x": 12, "y": 3 }, ... ],
                       "buzzes":  [ "Mint", ... ] },
         "bonds", "apiCalls", "probes" }
 
-    solved -> 200
-      { "accepted": true, "alreadySolved": false, "idx", "key",
-        "points", "bonds", "parBonds", "difficulty", "shareId",
+    accepted -> 200. One shape either way; read rungComplete.
+      { "accepted": true, "rungComplete": true|false, "alreadySolved": false,
+        "idx", "key", "phase", "phases",
+        "phasePoints",          what the phase you just finished was worth
+        "points",               the whole rung, and 0 until rungComplete
+        "bonds", "parBonds", "difficulty",
+        "shareId",              null until rungComplete
         "wallMs", "apiCalls", "probes", "solved", "totalPoints",
-        "reveal": { "title", "scheme", "rules": [ ... ] } }
+        "next": { ...PUZZLE... } | null,
+        "reveal": { "title", "scheme", "rules", "phases": [ ... ] } | null }
+
+      rungComplete false means the rung goes on. Nothing was banked, no share
+      id exists, no laws are revealed, and "next" is the following phase —
+      already issued, on the same clock. Paint it and submit again.
 
     422   the grid could not be read at all: { code: "bad_grid" }. Costs no
           probe.
@@ -105,7 +129,7 @@ ENDPOINTS
     ->    { "protocol": 2, "runId", "model", "provider", "config",
             "dialect", "status", "createdAt", "lastAt",
             "solved", "points", "bonds",
-            "open": { "idx", "key", "issuedAt" } | null }
+            "open": { "idx", "key", "issuedAt", "phase", "phases" } | null }
 
     There is no "read the open board again" endpoint. You hold your grid, the
     server holds the clock.
@@ -126,14 +150,33 @@ THE PUZZLE
     "puzzleId": "<runId>:0", "title": "The Regal Committee",
     "width": 64, "height": 64, "cells": 4096,
     "palette": [ { "id": 0, "name": "Tomato", "hex": "#ff4d4d" }, ... ],
-    "points": 4, "issuedAt": 1730000000000, "rowMajor": true }
+    "points": 4, "issuedAt": 1730000000000, "rowMajor": true,
+    "phase": 1, "phases": 1,
+    "locked": [] }
 
   That is all of it. Eight hues, ids 0-7, named on the palette. There is no
   seed, no zone map, no hue set and no rule text in here, and there will not
   be. The board tells you what is wrong, never why.
 
+  phase / phases   where this board sits in its rung and how long the rung
+                   is. You are told the total because you need it to budget a
+                   rung, and because it narrows nothing: a phase's laws are
+                   not derivable from how many phases there are.
+
+  points           what THIS PHASE is worth. A rung pays the sum over its
+                   phases, so a three-phase rung banks far more than any one
+                   of these numbers.
+
+  locked           [ { "x": 12, "y": 3, "hue": 5 }, ... ] — cells already
+                   painted, which must come back exactly as given. Empty on
+                   phase 1. On a later phase they are cells carried over from
+                   YOUR OWN accepted grid for the phase before. Paint one a
+                   different colour and it flashes; leave it blank and it says
+                   nothing, because blank is unfinished rather than wrong.
+
   Your clock starts at issuedAt, which is written before the board is even
-  derived. Nothing you can do gets content out ahead of the timestamp.
+  derived, and it does not restart between phases. Nothing you can do gets
+  content out ahead of the timestamp.
 
 
 THE TWO FEEDBACK CHANNELS
@@ -143,10 +186,12 @@ THE TWO FEEDBACK CHANNELS
              of how many of it there are.
 
   buzzes     The NAMES of colours whose counting law is unhappy: a quota, a
-             per-row limit, a coverage floor. This channel exists because
-             "Mint must cover at least 47 cells" can be broken on a
-             completely full grid with no wrong cell in it. It names the
-             colour. It never names the law, the number, or the direction.
+             per-row limit, a coverage floor, a ratio between two colours'
+             totals. This channel exists because "Mint must cover at least 47
+             cells" can be broken on a completely full grid with no wrong
+             cell in it. It names the colour. It never names the law, the
+             number, or the direction. One law can implicate more than one
+             colour, and when it does, all of them are named.
 
   Both are in reading order, so two answers about the same board compare
   equal.
@@ -187,6 +232,43 @@ THE GRID
   your next puzzle by padding a solution.
 
 
+PHASES
+
+  Low on the ladder a rung is one board. From about 30% of the way up it is
+  two, and past about 62% it is three. The payload's "phases" tells you.
+
+  The phases are ONE RUNG. One issue, one idx, one clock: wall_ms runs from
+  the moment phase 1 was issued to the moment the last phase is accepted.
+  Accepting an intermediate phase closes nothing, pays nothing and produces
+  no share id — it hands you the next board, in the same response, already
+  issued. There is no request to fetch it and there is not going to be.
+
+  Later phases are DERIVED FROM YOUR OWN ANSWER. Phase k+1's board and laws
+  are a deterministic function of the seed and of the grid you had accepted
+  for phase k. Specifically:
+
+    - the hue you used MOST in phase k is evicted from one zone of phase k+1
+    - that hue picks up a ceiling computed from how much of it you used
+    - the hue you used LEAST picks up a floor computed the same way
+    - a handful of cells are carried over from your grid and handed back
+      pre-filled, in "locked"
+
+  So there is nothing to precompute. Phase 2 does not exist until phase 1 has
+  an accepted grid behind it, and a different legal answer to phase 1 gives a
+  genuinely different phase 2 — different geometry, different laws, different
+  locked cells.
+
+  Every phase is solvable whatever you answered before it, and not only for
+  the answers the generator would have drawn itself. No derived constraint is
+  ever imposed on a board: each one is applied as an edit to the next phase's
+  reference solution before any law is read off it, so a solution provably
+  exists for the same reason it always did.
+
+  Budget: 600 requests per phase, so a three-phase rung gets 1800. Abandoning
+  drops the whole rung, mid-phase or not, and the phases you already finished
+  are not banked.
+
+
 THE CHAIN
 
   You do not choose your puzzles and you cannot look ahead.
@@ -206,9 +288,10 @@ THE CHAIN
   the chain keeps using the digest of your most recent accepted one.
 
   This matters more than it sounds. The difficulty band widens with rung
-  position: rung 0 draws from L1-L3, and the ceiling climbs about 35% per
-  rung until the whole ladder is in range around rung 40. So abandoning does
-  not let you shop for an easy board. It walks you into harder ones.
+  position: rung 0 draws from L1-L3, and the ceiling climbs about 18% per
+  rung until the whole ladder is in range around rung 24. So abandoning does
+  not let you shop for an easy board. It walks you into harder ones — denser
+  law sets in the middle of the ladder, and multi-phase rungs at the top.
 
   You must hold a board for 60 seconds before you may abandon it, and every
   second you held it is charged to your run — see WHAT IS MEASURED. The
@@ -247,8 +330,11 @@ WHAT IS MEASURED
                  congested endpoint changes how long you take, never how
                  many times you had to look at the board before you knew the
                  answer.
-    solved,      the solve itself, re-validated from the seed against the
-    points       identical shared validator every other caller runs
+    solved,      the solve itself, re-validated from the seed — and, on a
+    points       multi-phase rung, from your own accepted grids for the
+                 earlier phases — against the identical shared validator
+                 every other caller runs. A rung is worth the sum of its
+                 phases: 3-12 each, so up to 36 for a three-phase rung.
 
   Declared by you, unchecked, and displayed as given:
 
@@ -275,7 +361,8 @@ WHAT IS MEASURED
 THE RULES
 
   A legitimate solve is a grid you submitted for a puzzle that was issued to
-  you, that fills all 4096 cells, and that breaks no law. The server
+  you, that fills all 4096 cells, that leaves every locked cell as it was
+  given, and that breaks no law — once per phase, in order. The server
   re-derives the puzzle and re-runs the same validator, so a forged grid, an
   incomplete grid or a grid one cell off is rejected outright.
 
@@ -302,13 +389,13 @@ THE RULES
 BUDGETS
 
   runs per IP           60 / hour
-  requests per puzzle   600
+  requests per rung     600 x phases
   abandon cooldown      60 seconds
   issue TTL             6 hours
 
-  600 round trips is generous for deduction and far too few to walk a solver
-  to the law set one cell at a time. The real deterrent is not the ceiling —
-  it is that every probe is counted and published.
+  600 round trips per phase is generous for deduction and far too few to walk
+  a solver to the law set one cell at a time. The real deterrent is not the
+  ceiling — it is that every probe is counted and published.
 
 
 GET STARTED

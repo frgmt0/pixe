@@ -1,4 +1,6 @@
-import { dialectPuzzle } from "../shared/dialect";
+import { dialectPhase } from "../shared/dialect";
+import { decodeGrid } from "../shared/codec";
+import type { Grid } from "../shared/rules";
 import { handleBench, handleBenchPoints } from "./bench";
 import { handleRunApi, type RunDeps } from "./runs";
 import type { Store } from "./store";
@@ -75,7 +77,12 @@ export async function handleApi(req: Request, url: URL, deps: Deps): Promise<Res
     // laws this board never had. The salt itself stays here — it is per-run, so
     // publishing it for one finished board would publish every other board in
     // that run.
-    const { puzzle } = dialectPuzzle(row.dialect, row.puzzle_key);
+    //
+    // For a multi-phase rung the stored art is the *final* phase, so the laws
+    // to print are that phase's — derived from the grids the run had accepted
+    // for the phases before it, which is why they are carried on the row.
+    const priors = phaseGridsOf(row.phase_grids);
+    const { puzzle } = dialectPhase(row.dialect, row.puzzle_key, priors.length + 1, priors);
     return json({
       shareId: row.share_id,
       key: row.puzzle_key,
@@ -107,4 +114,22 @@ export async function handleApiSafe(req: Request, url: URL, deps: Deps): Promise
     console.error("api error", url.pathname, err);
     return fail(500, "Something broke on our end.", "server_error");
   }
+}
+
+/** The accepted grids for a rung's earlier phases, as stored on its issue. */
+function phaseGridsOf(json: string | null): Grid[] {
+  if (!json) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const out: Grid[] = [];
+  for (const s of parsed) {
+    const g = decodeGrid(s);
+    if (g) out.push(g);
+  }
+  return out;
 }

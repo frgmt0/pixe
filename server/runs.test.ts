@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { encodeGrid } from "../shared/codec";
-import { isValidKey, ladderIndex } from "../shared/generate";
+import { isValidKey, LADDER_SIZE, ladderIndex } from "../shared/generate";
 import { CELLS } from "../shared/palette";
 import { bandFor, nextKey, solutionDigest } from "./runs";
 import type { RunRow, RunSolveRow, Store } from "./store";
@@ -102,7 +102,12 @@ describe("the difficulty band", () => {
       expect(hi).toBeGreaterThanOrEqual(prev);
       prev = hi;
     }
-    expect(bandFor(60).hi).toBe(999_999);
+    // The whole ladder is in range well before rung 60 — the band is a fraction
+    // of `LADDER_SIZE`, so renumbering the ladder moves the curve with it
+    // rather than stranding the top half in the opening tier.
+    expect(bandFor(60).hi).toBe(LADDER_SIZE);
+    expect(bandFor(24).hi).toBe(LADDER_SIZE);
+    expect(bandFor(10).hi).toBeLessThan(LADDER_SIZE);
   });
 });
 

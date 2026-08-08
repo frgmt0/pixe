@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { decodeGrid, encodeGrid } from "@shared/codec";
-import { CELLS } from "@shared/palette";
+import { CELLS, GRID } from "@shared/palette";
 import { gridRows } from "@shared/protocol";
 import { api, type Feedback, type Issue, type SubmitOutcome } from "@/lib/api";
 import { Board } from "./board";
@@ -83,9 +83,13 @@ export function usePuzzle(runId: string, issue: Issue): PuzzleState {
 
   useEffect(() => {
     board.load(decodeGrid(localStorage.getItem(draftKey)) ?? emptyGrid());
+    // Locked cells are given, not deduced: a later phase hands back some of the
+    // agent's own pixels and refuses any grid that changes them. Stamping them
+    // over the draft is the honest starting position.
+    for (const c of issue.locked) board.grid[c.y * GRID + c.x] = c.hue;
     lastSaved.current = encodeGrid(board.grid);
     setVersion(board.version);
-  }, [board, draftKey]);
+  }, [board, draftKey, issue.locked]);
 
   const saveDraft = useCallback(() => {
     const art = encodeGrid(board.grid);
@@ -110,7 +114,9 @@ export function usePuzzle(runId: string, issue: Issue): PuzzleState {
       shown.current = at;
       setError(null);
       if (out.accepted) {
-        setVerdict({ ...NO_VERDICT, filled: CELLS, solved: true, grid });
+        // A phase handoff is not a solve: the rung is still open and the next
+        // board arrives in the same response. The UI agent picks that up.
+        setVerdict({ ...NO_VERDICT, filled: CELLS, solved: out.rungComplete, grid });
       } else {
         setProbes(out.probes);
         setVerdict({ ...out.feedback, grid });

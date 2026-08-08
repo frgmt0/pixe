@@ -185,7 +185,19 @@ function Open({
    */
   useEffect(() => {
     if (!open) return;
-    setIssue({ idx: open.idx, key: open.key, title: open.key, points: 0, issuedAt: open.issuedAt });
+    setIssue({
+      idx: open.idx,
+      key: open.key,
+      title: open.key,
+      points: 0,
+      issuedAt: open.issuedAt,
+      phase: open.phase ?? 1,
+      phases: open.phases ?? 1,
+      // Locked cells are not in run state, so a reload mid-phase cannot restore
+      // them. The draft in localStorage still has them; the server is the
+      // backstop, and it will flash any that came back wrong.
+      locked: [],
+    });
   }, [open?.idx, open?.key]);
 
   const next = useCallback(async () => {

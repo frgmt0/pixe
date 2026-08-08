@@ -107,7 +107,7 @@ export interface RunMe {
   solved: number;
   points: number;
   bonds: number;
-  open: { idx: number; key: string; issuedAt: number } | null;
+  open: { idx: number; key: string; issuedAt: number; phase?: number; phases?: number } | null;
 }
 
 /** Where the page remembers which run it is, since the token is HttpOnly and
@@ -141,6 +141,17 @@ export interface Issue {
   title: string;
   points: number;
   issuedAt: number;
+  /** Where this board sits in its rung's phase chain, and how long that is. */
+  phase: number;
+  phases: number;
+  /** Cells handed over pre-filled, which must come back exactly as given. */
+  locked: LockedCell[];
+}
+
+export interface LockedCell {
+  x: number;
+  y: number;
+  hue: number;
 }
 
 /**
@@ -186,12 +197,23 @@ function readFeedback(d: Record<string, unknown>, solved: boolean): Feedback {
 }
 
 function readIssue(d: Record<string, unknown>): Issue {
+  const locked: LockedCell[] = [];
+  if (Array.isArray(d.locked)) {
+    for (const c of d.locked as Record<string, unknown>[]) {
+      if (typeof c?.x === "number" && typeof c.y === "number" && typeof c.hue === "number") {
+        locked.push({ x: c.x, y: c.y, hue: c.hue });
+      }
+    }
+  }
   return {
     idx: num(d.idx),
     key: str(d.key),
     title: str(d.title, "Untitled board"),
     points: num(d.points),
     issuedAt: num(d.issuedAt, Date.now()),
+    phase: num(d.phase, 1) || 1,
+    phases: num(d.phases, 1) || 1,
+    locked,
   };
 }
 
@@ -208,6 +230,10 @@ export interface Reveal {
 export interface Banked {
   accepted: true;
   alreadySolved: boolean;
+  /** False when the rung has more phases to go: nothing has been banked yet. */
+  rungComplete: boolean;
+  /** The next phase, issued in the same response. Null once the rung is done. */
+  next: Issue | null;
   idx: number;
   key: string;
   points: number;
@@ -322,9 +348,13 @@ export const api = {
       };
     }
     const reveal = (d.reveal ?? null) as Reveal | null;
+    const nextPhase = d.next as Record<string, unknown> | null | undefined;
     return {
       accepted: true,
       alreadySolved: d.alreadySolved === true,
+      // Absent means a single-phase rung, which is complete by accepting.
+      rungComplete: d.rungComplete !== false,
+      next: nextPhase ? readIssue(nextPhase) : null,
       idx: num(d.idx),
       key: str(d.key),
       points: num(d.points),

@@ -1,7 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 import { encodeGrid } from "../shared/codec";
-import { dialectPuzzle } from "../shared/dialect";
+import { dialectPhase, dialectPuzzle } from "../shared/dialect";
+import { phaseCountFor } from "../shared/generate";
 import { CELLS, EMPTY, GRID, hueName } from "../shared/palette";
 import { gridRows, PROTOCOL_VERSION } from "../shared/protocol";
 import { handleRunApi } from "./runs";
@@ -169,6 +170,8 @@ describe("issuing", () => {
       idx: 0,
       key: puzzle.key as string,
       issuedAt: puzzle.issuedAt as number,
+      phase: 1,
+      phases: puzzle.phases as number,
     });
   });
 });
@@ -366,6 +369,134 @@ describe("abandoning", () => {
     expect(r.status).toBe(404);
     expect(r.data.code).toBe("no_open_issue");
   });
+});
+
+/**
+ * Multi-phase rungs, walked end to end through the real router.
+ *
+ * A rung at the top of the ladder is a chain of boards: accepting phase k hands
+ * back phase k+1 in the same response, on the same clock, and nothing is banked
+ * until the last one lands. The rung is opened directly through the store
+ * rather than by climbing to it, because the difficulty band would take twenty
+ * solved boards to reach a three-phase key and the thing under test is the
+ * handoff, not the band.
+ */
+describe("multi-phase rungs", () => {
+  const KEY = "L400";
+
+  /** Opens a rung on a chosen key. `/next` picks keys; a test needs one key. */
+  async function openRung(run: Run): Promise<{ dialect: string; payload: Record<string, unknown> }> {
+    await store.insertIssue(run.runId, 0, KEY, Date.now());
+    const row = await store.runById(run.runId);
+    // `next` refuses an open board, and hands the payload back with the refusal
+    // so a crashed runner can pick the rung up again. That is the only way to
+    // read an open board, and it is what this uses.
+    const r = await call("POST", `/api/bench/runs/${run.runId}/next`, run.token);
+    expect(r.status).toBe(409);
+    return { dialect: row!.dialect, payload: r.data.open as Record<string, unknown> };
+  }
+
+  test("the whole chain: three boards, one clock, one bank at the end", async () => {
+    expect(phaseCountFor(KEY)).toBe(3);
+    const run = await register();
+    const { dialect, payload } = await openRung(run);
+
+    expect(payload.phase).toBe(1);
+    expect(payload.phases).toBe(3);
+    expect(payload.locked).toEqual([]);
+    // Still no laws, at any phase. This is the line that must never move.
+    for (const forbidden of ["rules", "scheme", "seed", "dialect", "hueSet", "target"]) {
+      expect(payload[forbidden]).toBeUndefined();
+    }
+
+    const priors: Int8Array[] = [];
+    let phasePointsTotal = 0;
+
+    for (let phase = 1; phase <= 3; phase++) {
+      const { puzzle, target } = dialectPhase(dialect, KEY, phase, priors);
+      const r = await submit(run, gridRows(target as never));
+      expect(r.status).toBe(200);
+      expect(r.data.accepted).toBe(true);
+      expect(r.data.phase).toBe(phase);
+      expect(r.data.phases).toBe(3);
+      expect(r.data.phasePoints).toBe(puzzle.points);
+      phasePointsTotal += puzzle.points;
+
+      if (phase < 3) {
+        // A handoff banks nothing: no points, no share, and the rung stays open.
+        expect(r.data.rungComplete).toBe(false);
+        expect(r.data.points).toBe(0);
+        expect(r.data.shareId).toBeNull();
+        expect(r.data.reveal).toBeNull();
+        expect(await store.solveAt(run.runId, 0)).toBeNull();
+        expect((await store.openIssue(run.runId))!.idx).toBe(0);
+
+        const next = r.data.next as Record<string, unknown>;
+        expect(next.phase).toBe(phase + 1);
+        expect(next.phases).toBe(3);
+        expect(next.key).toBe(KEY);
+        // Carried-over cells arrive with the board, so the agent never has to
+        // guess which of its own pixels it is being held to.
+        expect((next.locked as unknown[]).length).toBeGreaterThan(0);
+        // The clock does not restart at a handoff.
+        expect(next.issuedAt).toBe(payload.issuedAt);
+      } else {
+        expect(r.data.rungComplete).toBe(true);
+        expect(r.data.next).toBeNull();
+        expect(r.data.points).toBe(phasePointsTotal);
+        expect(typeof r.data.shareId).toBe("string");
+        const reveal = r.data.reveal as { phases: unknown[] };
+        // All the laws, or none of them. A rung reveals as a unit because
+        // phase 2's board was derived from the answer to phase 1's.
+        expect(reveal.phases.length).toBe(3);
+      }
+      priors.push(Int8Array.from(target));
+    }
+
+    const solve = (await store.solveAt(run.runId, 0))!;
+    expect(solve.points).toBe(phasePointsTotal);
+    // A three-phase rung is worth more than any single board can be.
+    expect(solve.points).toBeGreaterThan(12);
+    const closed = await store.issueAt(run.runId, 0);
+    expect(closed!.outcome).toBe("solved");
+    expect(closed!.phase).toBe(3);
+  }, 60_000);
+
+  test("a locked cell painted over is refused, and the cell flashes", async () => {
+    const run = await register();
+    const { dialect } = await openRung(run);
+
+    const first = dialectPhase(dialect, KEY, 1, []).target;
+    const handoff = await submit(run, gridRows(first as never));
+    expect(handoff.data.rungComplete).toBe(false);
+
+    const priors = [Int8Array.from(first)];
+    const { puzzle, target } = dialectPhase(dialect, KEY, 2, priors);
+    const locked = puzzle.locked[0]!;
+    const g = Int8Array.from(target);
+    g[locked.y * GRID + locked.x] = (locked.hue + 1) % 8;
+
+    const r = await submit(run, gridRows(g as never));
+    expect(r.data.accepted).toBe(false);
+    expect(r.data.phase).toBe(2);
+    const flashes = (r.data.feedback as { flashes: { x: number; y: number }[] }).flashes;
+    expect(flashes).toContainEqual({ x: locked.x, y: locked.y });
+  }, 60_000);
+
+  test("run state and the open-issue refusal both name the phase", async () => {
+    const run = await register();
+    const { dialect } = await openRung(run);
+    const first = dialectPhase(dialect, KEY, 1, []).target;
+    await submit(run, gridRows(first as never));
+
+    const me = await call("GET", `/api/bench/runs/${run.runId}`, run.token);
+    expect(me.data.open).toEqual({ idx: 0, key: KEY, issuedAt: expect.any(Number), phase: 2, phases: 3 });
+
+    const refused = await call("POST", `/api/bench/runs/${run.runId}/next`, run.token);
+    expect(refused.status).toBe(409);
+    expect(refused.data.phase).toBe(2);
+    expect(((refused.data.open as Record<string, unknown>).locked as unknown[]).length).toBeGreaterThan(0);
+  }, 60_000);
 });
 
 /** The one thing no store method exposes, because nothing in the product moves

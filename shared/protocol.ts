@@ -81,7 +81,16 @@ export interface RunRow {
   status: RunStatus;
 }
 
-/** At most one row per run has `closed_at IS NULL` — the single open puzzle. */
+/**
+ * At most one row per run has `closed_at IS NULL` — the single open puzzle.
+ *
+ * `phase` and `phase_grids` are what make a multi-phase rung one issue rather
+ * than several. The clock is `issued_at` and it does not restart between
+ * phases; `phase_grids` holds the accepted grid for every phase already
+ * finished, JSON-encoded through the run-length codec, because phase k+1's laws
+ * are *derived from them* and re-validating the rung from the seed later needs
+ * the same inputs the derivation originally had.
+ */
 export interface IssueRow {
   run_id: string;
   idx: number;
@@ -89,6 +98,10 @@ export interface IssueRow {
   issued_at: number;
   closed_at: number | null;
   outcome: IssueOutcome | null;
+  /** 1-based. A single-phase rung stays at 1 for its whole life. */
+  phase: number;
+  /** JSON array of run-length grids, one per accepted phase. Null until one is. */
+  phase_grids: string | null;
 }
 
 export interface RunSolveRow {
@@ -203,6 +216,13 @@ export type ArtRow = RunSolveRow & {
   provider: string;
   config: string | null;
   dialect: string;
+  /**
+   * The accepted grids for the phases before the one `art` holds, carried from
+   * the issue. A multi-phase rung's art is its *final* phase, and that phase's
+   * laws are not derivable without them — a share page that re-derived phase 1
+   * would print a set of laws the picture beside it never had to obey.
+   */
+  phase_grids: string | null;
 };
 
 /** One dot on the scatter plots. Deliberately flat — charts should not have to
@@ -384,7 +404,7 @@ export interface RunState {
   points: number;
   bonds: number;
   /** The single open rung, or null when the run is between puzzles. */
-  open: { idx: number; key: string; issuedAt: number } | null;
+  open: { idx: number; key: string; issuedAt: number; phase: number; phases: number } | null;
 }
 
 /** One palette entry, sent with the board so a solver never has to guess hue ids. */
@@ -420,12 +440,37 @@ export interface PuzzleIssued {
   height: number;
   cells: number;
   palette: Swatch[];
-  /** Points on offer for a clean solve. */
+  /** Points on offer for a clean solve of **this phase**. A rung pays the sum. */
   points: number;
   /** Server clock, in epoch ms. `wall_ms` is measured from exactly this value. */
   issuedAt: number;
   /** Cells are row-major: `index = y * width + x`. Stated so nobody has to guess. */
   rowMajor: true;
+  /**
+   * Where this board sits in its rung's phase chain, 1-based, and how long the
+   * chain is.
+   *
+   * How many phases there are is entitled information — an agent budgeting a
+   * rung needs to know whether accepting this board ends it — and it costs
+   * nothing, because a phase's laws are not derivable from its number. What is
+   * absent, as ever, is anything about the laws themselves.
+   */
+  phase: number;
+  phases: number;
+  /**
+   * Cells already painted, and which must come back exactly as given. Empty on
+   * phase 1; on later phases these are carried over from the agent's own
+   * accepted grid for the phase before. A locked cell submitted with any other
+   * hue flashes, like any other placement complaint.
+   */
+  locked: LockedCellWire[];
+}
+
+/** One pre-filled cell, in the same coordinate language as `Flash`. */
+export interface LockedCellWire {
+  x: number;
+  y: number;
+  hue: number;
 }
 
 /**
@@ -522,6 +567,9 @@ export interface SubmitRejected {
   accepted: false;
   idx: number;
   key: string;
+  /** Which phase of the rung this verdict is about. */
+  phase: number;
+  phases: number;
   /** Painted cells and blank cells, echoed back so a truncated grid is obvious. */
   filled: number;
   empty: number;
@@ -532,27 +580,60 @@ export interface SubmitRejected {
   probes: number;
 }
 
+/**
+ * One shape for both kinds of acceptance, discriminated by `rungComplete`.
+ *
+ * Accepting phase k of a multi-phase rung is not the end of anything: the rung
+ * stays open, the clock keeps running, and phase k+1's whole payload comes back
+ * in `next` — derived, right then, from the grid that was just accepted. There
+ * is deliberately no second request to fetch it. A phase handoff that took a
+ * round trip would be a moment where the rung was solved but not issued, and
+ * the only thing that could happen in that window is bookkeeping.
+ *
+ * Nothing is banked until `rungComplete` is true: not the points, not the
+ * share, not the solve row. `points` is 0 and `shareId` null until then, while
+ * `phasePoints` reports what the phase just accepted was worth.
+ */
 export interface SubmitAccepted {
   accepted: true;
   idx: number;
   key: string;
+  /** The phase just accepted, and how many the rung has. */
+  phase: number;
+  phases: number;
+  /** False while more phases remain. The rung banks on the response that says true. */
+  rungComplete: boolean;
   /** True when this rung was already banked and this submit paid nothing. */
   alreadySolved: boolean;
+  /** What the phase just accepted was worth. Computed from its rule weights. */
+  phasePoints: number;
+  /** Banked for the whole rung — the sum over its phases. 0 until `rungComplete`. */
   points: number;
   bonds: number;
   parBonds: number;
   difficulty: number;
-  shareId: string;
-  /** Server-measured, authoritative: `issued_at` to this moment. */
+  /** Null until the rung is complete: there is nothing to share yet. */
+  shareId: string | null;
+  /** Server-measured, authoritative: `issued_at` to this moment. Spans every phase. */
   wallMs: number;
   apiCalls: number;
   probes: number;
   /** Totals for the run after banking this solve. */
   solved: number;
   totalPoints: number;
-  /** The post-solve reveal. Safe only because this board is banked and the next
-   *  key is unreachable without the run secret. */
-  reveal: { title: string; scheme: unknown; rules: unknown[] } | null;
+  /** The next phase, issued in this same response and on the same clock. */
+  next: PuzzleIssued | null;
+  /**
+   * The post-solve reveal, and only once the whole rung is banked. `rules` and
+   * `scheme` describe the final phase; `phases` carries every phase in order,
+   * so a multi-phase rung reveals all of its laws or none of them.
+   */
+  reveal: {
+    title: string;
+    scheme: unknown;
+    rules: unknown[];
+    phases: { phase: number; title: string; scheme: unknown; rules: unknown[] }[];
+  } | null;
 }
 
 /** POST /api/bench/runs/:id/abandon */
