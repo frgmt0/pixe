@@ -681,24 +681,45 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# METERING SEAM — owned by a later agent, left deliberately empty
+# METERING
 #
-# tokens in/out, cost, and TPS are declared per submit in the optional `meter`
-# object, and pi knows all three: every assistant message carries a Usage
-# record ({input, output, cacheRead, cacheWrite, totalTokens, cost:{...}}),
-# emitted on message_end in `--mode json` and persisted in the session JSONL.
-#
-# The intended shape is a pi extension loaded with -e that watches usage and
-# writes a running total somewhere the agent's curl calls can read it, plus an
-# auto-compact hook at ~250K. Append its flags to PI_EXTRA_ARGS and any prompt
-# addendum to METER_NOTE; nothing else here needs to change.
-#
-# See docs/RUNNER.md § "Metering" for what has already been established about
-# pi's usage reporting, session format, and extension API.
+# extensions/pixe-meter.ts does two things inside the pi process, entirely
+# locally: (1) caps live context at 250K tokens regardless of the model's own
+# window, by watching ctx.getContextUsage() and calling ctx.compact() itself
+# when pi's own contextWindow-minus-reserve trigger would not have fired yet;
+# (2) accumulates session usage (assistant messages, nested tool usage,
+# compaction-summary usage) and writes it to meter.json in the workdir, split
+# into whole-session cumulative and per-puzzle-since-last-reset, because the
+# server only stores the `meter` value attached to the submit that finally
+# accepts a rung (see server/runs.ts, postSubmit) — cumulative-for-the-whole-
+# run would overstate every puzzle after the first. It also registers a
+# `pixe_meter` tool that does the reset/read arithmetic for the agent instead
+# of asking it to subtract two numbers by hand. See docs/RUNNER.md § "Metering"
+# for the full design and what was verified against a local pi install.
 # ---------------------------------------------------------------------------
-PI_EXTRA_ARGS=()
-METER_NOTE=""
-# PI_EXTRA_ARGS+=(-e "$(dirname "$0")/extensions/pixe-meter.ts")
+PI_EXTRA_ARGS=(-e "$(dirname "$0")/extensions/pixe-meter.ts")
+METER_NOTE="
+
+METERING
+
+An extension is loaded that tracks token and cost usage and enforces a 250K
+live-context cap by compacting automatically; you do not need to do anything
+about context size yourself.
+
+To report accurately, the pixe server only keeps the \`meter\` value attached
+to whichever submit finally accepts a rung — not a running total across the
+whole run — so:
+
+- The moment a new puzzle starts (a /next response, or a \`next\` payload
+  inside an accepted submit), call the pixe_meter tool with
+  action=reset_puzzle before doing anything else with that puzzle.
+- Right before every submit request for the puzzle you currently hold, call
+  the pixe_meter tool with action=read and put its tokensIn/tokensOut/
+  costMicro fields verbatim into that submit's \`meter\` object.
+
+If the tool is ever unavailable, the same numbers are in \$PIXE_WORKDIR/meter.json
+as puzzleTokensIn/puzzleTokensOut/puzzleCostMicro. This is optional and ranked
+by nothing — best effort beats nothing, but do not let it slow down solving."
 
 # ---------------------------------------------------------------------------
 # Launch
@@ -716,6 +737,7 @@ PI_ARGS=(--print --provider "$PROVIDER" --model "$MODEL" --no-context-files
 export PIXE_API="$API_ORIGIN"
 export PIXE_RUN_ID="$RUN_ID"
 export PIXE_RUN_TOKEN="$RUN_TOKEN"
+export PIXE_WORKDIR="$WORKDIR"
 
 head_line "handing off to pi — the solving from here is the model's"
 printf '\n' >&2

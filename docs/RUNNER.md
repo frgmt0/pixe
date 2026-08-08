@@ -442,23 +442,150 @@ says so. Nothing fails.
 ## Metering
 
 `meter: { tokensIn, tokensOut, costMicro }` on submit is optional, declared, and
-unchecked. The runner does not populate it yet. **This section records what has
-already been established about pi so the work is not researched twice.**
-
-There is a marked seam in the script:
+unchecked — but the runner now populates it, and enforces a context-size cap,
+through `extensions/pixe-meter.ts`, loaded on every run:
 
 ```bash
-# METERING SEAM — owned by a later agent, left deliberately empty
-PI_EXTRA_ARGS=()
-METER_NOTE=""
+PI_EXTRA_ARGS=(-e "$(dirname "$0")/extensions/pixe-meter.ts")
+METER_NOTE="…"   # tells the agent how to use it; appended to the solver prompt
 ```
 
-`PI_EXTRA_ARGS` is spliced into the pi invocation and `METER_NOTE` is appended
-to the solver prompt. Nothing else needs to change.
+Everything below this point describes what that extension actually does, what
+was verified against a local pi 0.84.1 install, and how to change either the
+context cap or the metering behaviour.
 
-### pi reports usage on every assistant message
+### The 250K context cap
 
-Each `AssistantMessage` in a session carries a `Usage` record:
+`CONTEXT_CAP_TOKENS = 250_000` is a constant at the top of
+`extensions/pixe-meter.ts`. On every `message_end` event the extension reads
+`ctx.getContextUsage().tokens` and, the first time it crosses from at-or-under
+the cap to over it, calls `ctx.compact()` — the same call `/compact` and pi's
+own auto-compaction use, with `customInstructions` asking it to preserve
+deduced laws and the current puzzle's state verbatim, since losing a deduction
+mid-puzzle costs real probes to re-derive.
+
+This is deliberately a *second*, lower trigger next to pi's own. pi already
+auto-compacts at `contextTokens > contextWindow - reserveTokens` (default
+`reserveTokens` 16384) — see [compaction.md](https://github.com/earendil-works/pi-mono)
+or `docs/compaction.md` in the installed package. For any model whose context
+window is at or below roughly 266K, pi's own trigger fires before this
+extension's ever would, which is correct and left alone. The extension's job
+is only the cases pi's own trigger does not cover: models with windows large
+enough that 250K of live context is well inside pi's own budget. Edit
+`CONTEXT_CAP_TOKENS` in the extension file to change the cap; there is no flag
+for it, on purpose — it is a policy constant, not a per-run knob.
+
+**Verified against a local pi 0.84.1 install:** `ctx.getContextUsage()` returns
+exactly `{ tokens, contextWindow, percent }` as typed
+(`dist/core/extensions/types.d.ts`), and `ctx.compact({ customInstructions,
+onComplete, onError })` is callable and resolves through those callbacks — a
+probe extension calling it from `agent_end` against a live OpenRouter free
+model logged `PROBE compact onError: Nothing to compact (session too small)`,
+which is the correct, graceful outcome for a two-message session and confirms
+the call reaches pi's real compaction path rather than throwing or hanging.
+Reaching an *actual* 250K-token session to watch the cap fire for real was not
+attempted — that would cost real tokens for no additional confidence, since
+the trigger logic (`ctx.getContextUsage()` + edge-triggered `ctx.compact()`)
+is the exact pattern pi ships as its own `examples/extensions/trigger-compact.ts`
+reference example, just at a different threshold.
+
+### Metering: how the numbers get from pi to the server
+
+`meter` is stored **per puzzle, not per run.** Reading `server/runs.ts`
+(`postSubmit`) directly: `meter` is only ever written into a `RunSolve` row at
+the point a rung's *final* phase is accepted (`store.insertRunSolve`) — a
+probe (`accepted: false`) never persists it, and a phase handoff
+(`rungComplete: false`) never persists it either. So whatever `meter` value is
+on the one submit that finally banks a rung is the number the leaderboard
+learns for that puzzle. `docs/AGENT-PROTOCOL.md` §9 already said this
+("cumulative for that puzzle and resent on every submit"); reading the code
+confirms it and rules out "cumulative for the whole run" — sending the
+session-wide running total on every submit would make every puzzle after the
+first look like it cost everything spent so far, since nothing sums or diffs
+across submits server-side. Cumulative-per-run is not a safe reading of the
+schema; cumulative-per-puzzle is what the field is for.
+
+The extension resolves this without needing to know pixe's protocol at all: it
+tracks whole-session cumulative usage (see below) and separately tracks a
+**puzzle baseline** — a snapshot of the cumulative totals — that only the
+agent knows when to reset, because only the agent knows where a puzzle starts.
+
+Two ways to get the puzzle-scoped numbers, both backed by the same state:
+
+1. **The `pixe_meter` tool**, registered by the extension. `action:
+   "reset_puzzle"` snapshots the current cumulative totals as the new
+   baseline — call it the moment a new puzzle starts (a `/next` response, or a
+   `next` payload inside an accepted submit). `action: "read"` returns
+   `{tokensIn, tokensOut, costMicro}` computed as cumulative-minus-baseline —
+   call it right before every submit for the puzzle currently held, and copy
+   the result straight into that submit's `meter` field. This exists so the
+   model never has to subtract two numbers by hand across turns, which is
+   exactly the kind of arithmetic a "sloppy" agent gets wrong.
+2. **`$PIXE_WORKDIR/meter.json`**, written on every message as a fallback /
+   sanity check if the tool is ever unavailable:
+   ```json
+   {
+     "tokensIn": 41200, "tokensOut": 3100, "costMicro": 78000,
+     "puzzleTokensIn": 6200, "puzzleTokensOut": 540, "puzzleCostMicro": 9100,
+     "updatedAt": 1730000000000
+   }
+   ```
+   The bare `tokensIn`/`tokensOut`/`costMicro` fields are whole-session
+   cumulative, for debugging only — do not put them on the wire once more than
+   one puzzle has been solved. The `puzzle*` fields are the ones that belong
+   in `meter`.
+
+`METER_NOTE`, appended to the solver prompt, tells the agent both of the above
+and says reporting is optional and ranked by nothing, so it never trades
+solving time for metering precision.
+
+**Verified against a local pi 0.84.1 install:** loaded the extension with
+`pi --print -e extensions/pixe-meter.ts --provider openrouter --model
+openai/gpt-oss-20b:free` and a prompt telling the model to call `pixe_meter`
+with `reset_puzzle` then `read`. The session JSONL confirms the tool call
+executed (`toolResult` entry with the reset confirmation text) and
+`meter.json` was written with non-zero, internally-consistent `puzzleTokensIn`
+after further usage accrued past the reset — the delta tracking behaves as
+designed. (The free model used did not reliably follow the multi-step
+instruction to completion — an artifact of testing against a `:free`
+OpenRouter model, not of the extension — but the one tool call it did make
+round-tripped correctly.)
+
+### What tokensIn/tokensOut mean here
+
+pi's `Usage` record (below) splits `input` from `cacheRead`/`cacheWrite`. The
+extension reports `tokensIn = input + cacheRead + cacheWrite` (everything that
+was prompt rather than generation) and `tokensOut = output` (generated
+tokens; `reasoning`, when a provider reports it, is already a subset of
+`output` per pi's own type, so it is not added twice). `costMicro` accumulates
+`round(usage.cost.total * 1e6)` per message, which matches `docs/RUNNER.md`'s
+original formula applied incrementally rather than once at the end.
+
+The extension also folds in `ToolResultMessage.usage` (nested LLM calls made
+inside a tool) and `CompactionEntry.usage` (the summarization call itself),
+via the `session_compact` event — both are counted in pi's own footer and
+session totals, so a meter that wants to agree with what pi itself reports
+needs both too. This matches what `docs/RUNNER.md` had already flagged as
+necessary before this extension existed.
+
+### TPS for the UI
+
+Nothing extra is needed on the wire for TPS — it is derived, not reported.
+The server already measures `wallMs` (issue-to-acceptance, spanning every
+phase of a rung) and now receives an accurate `tokensOut` via `meter`. The UI
+should compute **TPS = tokensOut / (wallMs / 1000)** per solved rung, i.e.
+generated tokens per second of the *effective* time the board was held —
+consistent with how `wall_ms` is already defined as spanning abandoned time
+too (§1 of `docs/AGENT-PROTOCOL.md`), so a slow provider or a long think
+naturally shows up as low TPS rather than being hidden. Average over solves
+that actually reported both fields, the same rule `tokens_per_solve` and
+`cost_per_solve_micro` already follow (§9) — never impute zero for a run that
+reported nothing.
+
+### Reference: pi's Usage record
+
+Each `AssistantMessage`, and optionally a `ToolResultMessage` or
+`CompactionEntry`, carries a `Usage` record:
 
 ```typescript
 interface Usage {
@@ -472,86 +599,18 @@ interface Usage {
 }
 ```
 
-`cost` is in dollars, computed by pi from its model catalog. `costMicro` is
-millionths of a dollar, so `costMicro = round(cost.total * 1e6)`.
+`cost` is in dollars, computed by pi from its model catalog; `costMicro` is
+`round(cost.total * 1e6)`. `extensions/pixe-meter.ts` is what actually reads
+this now, via the `message_end` and `session_compact` events — see above.
 
-`ToolResultMessage` has an optional `usage` too, for nested LLM work done inside
-a tool. Compaction entries also carry usage for the summary generation, and pi
-counts it in session totals — so should any meter that wants to match pi's own
-footer.
-
-### Three ways to get at it
-
-1. **`--mode json`.** Every session event as JSON lines on stdout. The first line
-   is a session header; `message_end` carries the final authoritative message
-   including `usage`. `message_update` events are delta-only and carry no
-   cumulative snapshot. This replaces `--print`, so the seam would swap the mode
-   and tee the stream.
-   ```bash
-   pi --mode json "…" | jq -c 'select(.type=="message_end") | .message.usage'
-   ```
-2. **The session JSONL.** Sessions are written to `~/.pi/agent/sessions/`,
-   organised by working directory. Inside the bash tool, `PI_SESSION_FILE` is the
-   absolute path to the current session file (unset for ephemeral sessions), so
-   an agent's own curl call could read its running total straight off disk. Also
-   available to bash tools: `PI_SESSION_ID`, `PI_PROVIDER`, `PI_MODEL`,
-   `PI_REASONING_LEVEL`. The runner currently uses a normal (persistent) session
-   named `pixe <runId>`, so `PI_SESSION_FILE` is set.
-3. **An extension.** The most direct route, and the one the seam expects.
-
-### Extension API, the relevant parts
-
-TypeScript, loaded with `-e <path>`, repeatable. `--no-extensions` disables
-discovery while leaving explicit `-e` paths working, which is worth using so a
-benchmark run is not perturbed by whatever the operator has installed.
-
-- `pi.on(event, handler)` — the event bus. Agent events (`agent_start`,
-  `turn_start`, `turn_end`, `message_start`, `message_update`, `message_end`,
-  `agent_end`), tool events (`tool_execution_start` / `_update` / `_end`),
-  model events, session events.
-- `ctx.getContextUsage()` — current context usage for the active model. Uses the
-  last assistant usage where available, then estimates the trailing messages.
-  This is the thing to poll for a 250K threshold.
-- `ctx.compact({ customInstructions, onComplete, onError })` — trigger compaction
-  without awaiting it.
-- `pi.registerTool(definition)` — a first-class alternative to curl-in-bash, if a
-  future runner wants the meter attached to the submit call itself rather than
-  read out of band.
-- `pi.registerFlag(name, options)` / `pi.getFlag(name)` — extensions can add
-  their own CLI flags, so a meter extension can take its own configuration
-  without `run-pixe.sh` having to know about it.
-- `pi.appendEntry(customType, data?)`, `pi.exec(command, args, options?)`,
-  `pi.setSessionName(name)`.
-- `session_before_compact` — hook for custom summarisation. Relevant if compaction
-  must preserve the deduction notes verbatim, which it probably must: a summary
-  that loses "Mint is never adjacent to Ochre" costs probes to re-derive.
-
-### Auto-compaction already exists
-
-pi compacts automatically when `contextTokens > contextWindow - reserveTokens`.
-Defaults: `reserveTokens` 16384, `keepRecentTokens` 20000, configurable under
-`compaction` in `~/.pi/agent/settings.json` or `<project>/.pi/settings.json`, and
-disableable with `"enabled": false`.
-
-So a "compact at 250K" requirement is a *policy* on top of an existing mechanism,
-not a mechanism to build: watch `ctx.getContextUsage()` and call `ctx.compact()`
-early, or raise `reserveTokens` for a model whose context window is larger than
-the budget you want to run at. Note that the runner's `--base-url` path already
-generates a `models.json` with `contextWindow`, which is what pi measures the
-threshold against — a meter extension and that generated file need to agree.
-
-### Two things worth deciding early
-
-- **Where the numbers cross over.** The meter lives in pi; the submit is a curl
-  call the agent makes. Either the extension writes a running total to a file in
-  the workdir that the prompt tells the agent to read and include, or submits
-  move into a registered tool that attaches the meter itself. The second is
-  tidier and changes what the agent is asked to do; the first changes nothing
-  and is approximate.
-- **Cumulative per puzzle.** The protocol wants `meter` cumulative per puzzle,
-  resent on each submit, with the last value before acceptance being the one
-  recorded. pi's usage is per message and cumulative per session. Something has
-  to hold the per-puzzle boundary, and only the agent knows where it is.
+One thing worth knowing if the cap ever needs retuning for `--base-url`
+providers: the runner's endpoint-override path (see
+[Custom endpoints](#custom-endpoints---base-url)) generates a `models.json`
+with a `contextWindow` for the model, and that is what pi measures its own
+`contextTokens > contextWindow - reserveTokens` trigger against. The 250K cap
+in the extension is independent of that number by design — it does not need
+to agree with it, since it is meant to bind regardless of what a model's own
+window would otherwise allow.
 
 ---
 
