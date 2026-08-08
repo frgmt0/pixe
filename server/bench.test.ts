@@ -6,9 +6,9 @@ import type { ChartPoint } from "../shared/protocol";
 const run = (id: string, over: Partial<RunRow> = {}): RunRow => ({
   id,
   secret: "s",
-  harness: id,
+  model: id,
+  provider: "acme",
   config: null,
-  operator_id: null,
   dialect: "d",
   created_at: 1_000,
   last_at: 2_000,
@@ -18,7 +18,8 @@ const run = (id: string, over: Partial<RunRow> = {}): RunRow => ({
 
 const solve = (runId: string, idx: number, wallMs: number, over: Partial<ChartPoint> = {}): ChartPoint => ({
   run_id: runId,
-  harness: runId,
+  model: runId,
+  provider: "acme",
   config: null,
   idx,
   difficulty: 5,

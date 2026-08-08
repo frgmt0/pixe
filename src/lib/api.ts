@@ -1,18 +1,24 @@
 /**
  * Every fetch the client makes, in one place, typed against `shared/protocol`.
  *
- * The rule that shapes this file: the client no longer knows the laws. It used
- * to re-derive each puzzle from its seed to drive the glow, which is exactly
- * what was extracted to batch-solve a thousand boards. So the two feedback
- * channels now arrive over the wire, and this module is where they are turned
- * back into the `Set<number>`s the canvas and the palette have always drawn.
+ * The rule that shapes this file: the client does not know the laws. It used to
+ * re-derive each puzzle from its seed to drive the glow, which is exactly what
+ * was extracted to batch-solve a thousand boards. So the two feedback channels
+ * arrive over the wire, and this module is where they are turned back into the
+ * `Set<number>`s the canvas and the palette have always drawn.
  *
  * Nothing here imports the generator, the validator or the dialect. If it ever
  * does, the benchmark is over.
+ *
+ * The page is now a *client* of the agent API rather than a privileged surface
+ * on top of it: it registers a run, takes a puzzle, and submits grids, exactly
+ * as a runner script does. There is no attestation, no pairing and no endpoint
+ * a browser can reach that an HTTP client cannot.
  */
 
-import { decodeGrid } from "@shared/codec";
-import type { MeterReport, RunStatus } from "@shared/protocol";
+import { GRID } from "@shared/palette";
+import { HUES } from "@shared/palette";
+import type { Feedback as WireFeedback, MeterReport, RunStatus } from "@shared/protocol";
 import type { Bond, Rule } from "@shared/rules";
 import type { ZoneScheme } from "@shared/zones";
 
@@ -33,9 +39,9 @@ interface Raw {
 }
 
 /**
- * `credentials: "same-origin"` is the whole authentication story: the run token
- * lives in an HttpOnly `pixe_run` cookie, so the page never holds it and never
- * has to.
+ * `credentials: "same-origin"` is the whole authentication story for the page:
+ * the run token lives in an HttpOnly `pixe_run` cookie, so the browser never
+ * holds it. A script sends `Authorization: Bearer` instead.
  */
 async function raw(path: string, init?: RequestInit): Promise<Raw> {
   let res: Response;
@@ -73,11 +79,13 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   return r.data as T;
 }
 
-const postJson = (body: unknown, headers?: Record<string, string>): RequestInit => ({
+const postJson = (body: unknown): RequestInit => ({
   method: "POST",
   body: JSON.stringify(body),
-  headers,
 });
+
+const str = (v: unknown, fallback = ""): string => (typeof v === "string" ? v : fallback);
+const num = (v: unknown, fallback = 0): number => (typeof v === "number" ? v : fallback);
 
 /* ------------------------------------------------------------------ */
 /* The run                                                             */
@@ -85,33 +93,13 @@ const postJson = (body: unknown, headers?: Record<string, string>): RequestInit 
 
 export interface RunSummary {
   runId: string;
-  /**
-   * The benchmarked identity, and null until a human has vouched for it. There
-   * is no `model`: a harness driving subagents may be running several, so one
-   * model string is ill-defined rather than merely unverifiable. `config` is
-   * the operator's prose about the setup and is ranked by nothing.
-   */
-  harness: string | null;
+  /** Declared at registration and never verified. The two columns a leaderboard
+   *  groups on; `config` is prose and ranks nothing. */
+  model: string;
+  provider: string;
   config: string | null;
   createdAt: number;
   status: RunStatus;
-}
-
-/** What an agent has to show a human before it is allowed to draw anything. */
-export interface Pairing {
-  userCode: string | null;
-  verificationUri: string;
-  verificationUriComplete: string | null;
-  pollIntervalMs: number;
-  expiresAt: number;
-  expired: boolean;
-  message: string | null;
-}
-
-export interface Registered {
-  run: RunSummary;
-  dialect: string;
-  pairing: Pairing | null;
 }
 
 export interface RunMe {
@@ -120,46 +108,25 @@ export interface RunMe {
   points: number;
   bonds: number;
   open: { idx: number; key: string; issuedAt: number } | null;
-  pairing: Pairing | null;
 }
 
-const str = (v: unknown, fallback = ""): string => (typeof v === "string" ? v : fallback);
-const num = (v: unknown, fallback = 0): number => (typeof v === "number" ? v : fallback);
+/** Where the page remembers which run it is, since the token is HttpOnly and
+ *  every run-scoped path names the run. */
+const RUN_STASH = "pixe:runId";
 
-const PAIRING_PAGE = "/for-humans";
+export const storedRunId = (): string | null => localStorage.getItem(RUN_STASH);
 
-function readPairing(d: Record<string, unknown>): Pairing | null {
-  const nested = (d.pairing ?? null) as Record<string, unknown> | null;
-  const src = nested ?? d;
-  const code = typeof src.userCode === "string" ? src.userCode : null;
-  if (!nested && !code) return null;
-  return {
-    userCode: code,
-    verificationUri: str(src.verificationUri, PAIRING_PAGE),
-    verificationUriComplete:
-      typeof src.verificationUriComplete === "string" ? src.verificationUriComplete : null,
-    pollIntervalMs: Math.max(1000, num(src.pollIntervalMs, 3000)),
-    expiresAt: num(src.expiresAt),
-    expired: src.expired === true,
-    message: typeof src.message === "string" ? src.message : null,
-  };
-}
-
-/**
- * A run is born `pending` and stays there until a human vouches for it, so an
- * absent status reads as `pending` rather than `open`. Guessing the other way
- * would have the page offering a board to a run the server will refuse.
- */
 function readRun(d: Record<string, unknown> | null): RunSummary | null {
   if (!d) return null;
   const id = str(d.runId);
   if (!id) return null;
   return {
     runId: id,
-    harness: typeof d.harness === "string" ? d.harness : null,
+    model: str(d.model, "unnamed"),
+    provider: str(d.provider, "unnamed"),
     config: typeof d.config === "string" ? d.config : null,
     createdAt: num(d.createdAt),
-    status: str(d.status, "pending") as RunStatus,
+    status: str(d.status, "open") as RunStatus,
   };
 }
 
@@ -167,31 +134,20 @@ function readRun(d: Record<string, unknown> | null): RunSummary | null {
 /* The board and its feedback                                          */
 /* ------------------------------------------------------------------ */
 
-/** The open puzzle, plus the head of its attestation chain. */
+/** The open puzzle. Structure only — no seed, no scheme, no laws. */
 export interface Issue {
   idx: number;
   key: string;
   title: string;
   points: number;
   issuedAt: number;
-  /** Carried into the next `/api/attest`; every response hands back the pair. */
-  receipt: string;
-  nonce: string;
-  /**
-   * The execution-binding pair, opaque here exactly as the receipt and the
-   * nonce are. `exec` is a challenge for `src/game/execProof.ts` to answer and
-   * this module has no business reading it; `execReceipt` is the running tally,
-   * signed by the server, that the answer is presented against.
-   */
-  exec: unknown;
-  execReceipt: string;
-  /** The rung a `POST /api/next` walked away from, when it closed one. */
-  abandoned: number | null;
 }
 
 /**
- * The two channels, and nothing else: which cells are breaking a placement law
- * and which hues have an unhappy counting law. Neither ever names a law.
+ * The two channels, in the shape the canvas and the palette have always drawn:
+ * flashing cell indices and buzzing hue ids. The wire speaks in coordinates and
+ * colour names, so this is where the translation happens — one direction, in
+ * one place.
  */
 export interface Feedback {
   badCells: Set<number>;
@@ -202,39 +158,30 @@ export interface Feedback {
   solved: boolean;
 }
 
-function asNumbers(v: unknown): number[] {
-  return Array.isArray(v) ? v.filter((n): n is number => typeof n === "number") : [];
-}
+const HUE_BY_NAME = new Map(HUES.map((h) => [h.name, h.id]));
 
-/**
- * `bad` is a 4096-cell mask run-length encoded with the ordinary grid codec —
- * `0` where a cell should flash — so a clean board costs four bytes instead of
- * an array of four thousand integers. `decodeGrid` is safe on this side of the
- * wire: it is a codec and knows nothing about laws.
- *
- * The plain `badCells`/`hotHues` arrays are read too, because that is how the
- * protocol document spells the same two channels and a client that only
- * understands one of the two spellings breaks on whichever it does not get.
- */
-function readFeedback(v: unknown): Feedback | null {
-  if (!v || typeof v !== "object") return null;
-  const f = v as Record<string, unknown>;
-  if (!("bad" in f || "badCells" in f || "hot" in f || "hotHues" in f)) return null;
-
+function readFeedback(d: Record<string, unknown>, solved: boolean): Feedback {
+  const wire = (d.feedback ?? {}) as Partial<WireFeedback>;
   const badCells = new Set<number>();
-  if (typeof f.bad === "string") {
-    const mask = decodeGrid(f.bad);
-    if (mask) for (let i = 0; i < mask.length; i++) if (mask[i] === 0) badCells.add(i);
+  if (Array.isArray(wire.flashes)) {
+    for (const f of wire.flashes) {
+      if (f && typeof f.x === "number" && typeof f.y === "number") badCells.add(f.y * GRID + f.x);
+    }
   }
-  for (const i of asNumbers(f.badCells)) badCells.add(i);
-
+  const hotHues = new Set<number>();
+  if (Array.isArray(wire.buzzes)) {
+    for (const name of wire.buzzes) {
+      const id = HUE_BY_NAME.get(name);
+      if (id !== undefined) hotHues.add(id);
+    }
+  }
   return {
     badCells,
-    hotHues: new Set<number>([...asNumbers(f.hot), ...asNumbers(f.hotHues)]),
-    filled: num(f.filled),
-    empty: num(f.empty),
-    bonds: num(f.bonds),
-    solved: f.solved === true,
+    hotHues,
+    filled: num(d.filled),
+    empty: num(d.empty),
+    bonds: num(d.bonds),
+    solved,
   };
 }
 
@@ -245,64 +192,7 @@ function readIssue(d: Record<string, unknown>): Issue {
     title: str(d.title, "Untitled board"),
     points: num(d.points),
     issuedAt: num(d.issuedAt, Date.now()),
-    receipt: str(d.receipt),
-    nonce: str(d.nonce),
-    exec: d.exec ?? null,
-    execReceipt: str(d.execReceipt),
-    abandoned: typeof d.abandoned === "number" ? d.abandoned : null,
   };
-}
-
-/* ------------------------------------------------------------------ */
-/* Attestation                                                         */
-/* ------------------------------------------------------------------ */
-
-export type EventKind = "stroke" | "paint" | "pick" | "undo" | "view" | "intent";
-
-/**
- * Deliberately coarse. Anything finer — pointer coordinates, pressure, timing
- * curves — would be more for a script to forge but also more for an honest
- * harness to get wrong, and Playwright driving a real page is a first-class way
- * to play here rather than an attack.
- *
- * Shaped locally rather than imported: this is `server/attest.ts`'s private
- * vocabulary, and the whole point of the opaque envelope in `shared/protocol`
- * is that the attestation scheme can change without a protocol bump.
- */
-export interface AttestedEvent {
-  t: EventKind;
-  at: number;
-  /** Cells touched, for `stroke` and `paint`. */
-  n?: number;
-  /** Duration in ms, for `stroke`. */
-  d?: number;
-}
-
-/** The server refuses a longer envelope, so the queue is drained in slices. */
-export const MAX_BATCH = 64;
-
-export interface Attested {
-  receipt: string;
-  nonce: string;
-  events: number;
-  feedback: Feedback | null;
-  /** The next execution challenge and the tally so far. Opaque here. */
-  exec: unknown;
-  execReceipt: string;
-}
-
-export interface AttestBody {
-  idx: number;
-  receipt: string;
-  nonce: string;
-  events: AttestedEvent[];
-  /** Omitted when the canvas has not moved: flushing events during a pause
-   *  should not cost an assessment. */
-  art?: string;
-  /** The answer to the last challenge, omitted when the page could not produce
-   *  one. An absent proof is inconclusive to the server, never an error. */
-  exec?: unknown;
-  execReceipt?: string;
 }
 
 /* ------------------------------------------------------------------ */
@@ -325,14 +215,15 @@ export interface Banked {
   parBonds: number;
   wallMs: number;
   apiCalls: number;
-  events: number;
+  probes: number;
   shareId: string;
   reveal: Reveal | null;
 }
 
 export interface NotYet {
   accepted: false;
-  feedback: Feedback | null;
+  feedback: Feedback;
+  probes: number;
   message: string;
 }
 
@@ -350,8 +241,9 @@ export interface ArtPost {
   scheme: ZoneScheme;
   bondPairs: Bond[];
   parBonds: number;
-  /** The harness a human vouched for, and its own note about the setup. */
-  harness: string | null;
+  /** Declared by the run, unverified. */
+  model: string;
+  provider: string;
   config: string | null;
   points: number;
   bonds: number;
@@ -365,98 +257,70 @@ export interface ArtPost {
 
 export const api = {
   /**
-   * A run declares no identity. The body is empty and the server refuses a
-   * `harness` in it: the harness is whatever the human types when they vouch,
-   * which is the one claim on the table nobody has a reason to fudge. An
-   * operator key is that same human, already vouched for, skipping the step.
+   * A run declares a model and a provider, both required and neither checked.
+   * That is the whole of registration — no key, no signup, and nothing to
+   * arrange out of band.
    */
-  async register(operatorKey?: string): Promise<Registered> {
+  async register(model: string, provider: string, config?: string): Promise<RunSummary> {
     const d = await call<Record<string, unknown>>(
-      "/api/run",
-      postJson({}, operatorKey ? { authorization: `Bearer ${operatorKey}` } : undefined),
+      "/api/bench/runs",
+      postJson({ model, provider, ...(config ? { config } : {}) }),
     );
     const run = readRun(d);
     if (!run) throw new ApiError("The server registered a run it would not name.", 500);
-    return { run, dialect: str(d.dialect), pairing: readPairing(d) };
+    localStorage.setItem(RUN_STASH, run.runId);
+    return run;
   },
 
   async me(): Promise<RunMe> {
-    const d = await call<Record<string, unknown>>("/api/run/me");
-    return {
-      run: readRun((d.run ?? null) as Record<string, unknown> | null),
-      solved: num(d.solved),
-      points: num(d.points),
-      bonds: num(d.bonds),
-      open: (d.open ?? null) as RunMe["open"],
-      pairing: readPairing(d),
-    };
+    const id = storedRunId();
+    const empty: RunMe = { run: null, solved: 0, points: 0, bonds: 0, open: null };
+    if (!id) return empty;
+    try {
+      const d = await call<Record<string, unknown>>(`/api/bench/runs/${id}`);
+      return {
+        run: readRun(d),
+        solved: num(d.solved),
+        points: num(d.points),
+        bonds: num(d.bonds),
+        open: (d.open ?? null) as RunMe["open"],
+      };
+    } catch (err) {
+      // A run the cookie can no longer authenticate is a run this browser has
+      // lost. There is no recovery, so forget it rather than loop on a 401.
+      if (err instanceof ApiError && err.status === 401) localStorage.removeItem(RUN_STASH);
+      return empty;
+    }
   },
 
-  /** Closes whatever is open and issues the next rung of the chain. */
-  async next(): Promise<Issue> {
-    return readIssue(await call<Record<string, unknown>>("/api/next", postJson({})));
+  /** Issues the next rung of the chain. Refuses while a board is open. */
+  async next(runId: string): Promise<Issue> {
+    return readIssue(await call<Record<string, unknown>>(`/api/bench/runs/${runId}/next`, postJson({})));
   },
 
-  async board(): Promise<Issue> {
-    return readIssue(await call<Record<string, unknown>>("/api/board"));
-  },
-
-  async attest(body: AttestBody): Promise<Attested> {
-    const d = await call<Record<string, unknown>>("/api/attest", postJson(body));
-    return {
-      receipt: str(d.receipt, body.receipt),
-      nonce: str(d.nonce, body.nonce),
-      events: num(d.events),
-      feedback: readFeedback(d.feedback),
-      // Falling back to what was sent, the way the receipt does. A server that
-      // answers without an exec pair did not advance the chain either, so the
-      // challenge the client is holding is still the one it owes an answer to.
-      exec: d.exec ?? body.exec ?? null,
-      execReceipt: str(d.execReceipt, body.execReceipt ?? ""),
-    };
+  /** Drops the open board. Charged to the run, and refused for the first minute. */
+  async abandon(runId: string): Promise<void> {
+    await call(`/api/bench/runs/${runId}/abandon`, postJson({}));
   },
 
   /**
    * Submit is also the observation channel, so a grid that is not yet a
    * solution is not an error — it is the answer to the question the submit
-   * asked. The server has said that two ways during this rewrite (200 with
-   * `accepted: false`, and 422 carrying `feedback`) and both mean keep
-   * painting; only a body with no feedback in it at all is a real failure.
+   * asked, and it costs a probe.
    */
-  async submit(
-    art: string,
-    receipt: string,
-    execReceipt?: string,
-    meter?: MeterReport,
-  ): Promise<SubmitOutcome> {
-    const r = await raw(
-      "/api/submit",
-      postJson({
-        art,
-        receipt,
-        // The execution tally the run accumulated on this board. The server
-        // only logs its verdict today, but it cannot log a tally it was never
-        // shown, and an unmeasured gate can never be turned on.
-        ...(execReceipt ? { execReceipt } : {}),
-        ...(meter ? { meter, ...meter } : {}),
-      }),
+  async submit(runId: string, grid: string[], meter?: MeterReport): Promise<SubmitOutcome> {
+    const d = await call<Record<string, unknown>>(
+      `/api/bench/runs/${runId}/submit`,
+      postJson({ grid, ...(meter ? { meter } : {}) }),
     );
-    const feedback = readFeedback(r.data.feedback) ?? readFeedback(r.data);
-    if (r.data.accepted === false || (!r.ok && feedback)) {
+    if (d.accepted === false) {
       return {
         accepted: false,
-        feedback,
-        message: str(r.data.error, "That grid does not satisfy every law yet."),
+        feedback: readFeedback(d, false),
+        probes: num(d.probes),
+        message: "That grid does not satisfy every law yet.",
       };
     }
-    if (!r.ok) {
-      throw new ApiError(
-        str(r.data.error, "Could not submit that."),
-        r.status,
-        typeof r.data.code === "string" ? r.data.code : undefined,
-      );
-    }
-    const d = r.data;
     const reveal = (d.reveal ?? null) as Reveal | null;
     return {
       accepted: true,
@@ -468,7 +332,7 @@ export const api = {
       parBonds: num(d.parBonds),
       wallMs: num(d.wallMs),
       apiCalls: num(d.apiCalls),
-      events: num(d.events),
+      probes: num(d.probes),
       shareId: str(d.shareId),
       reveal: reveal && Array.isArray(reveal.rules) ? reveal : null,
     };

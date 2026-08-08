@@ -1,22 +1,20 @@
 /**
- * Writes both migrations from the schema in `server/store.ts`.
+ * Writes every migration from the schema in `server/store.ts`.
  *
  * D1 has no equivalent of the `CREATE TABLE IF NOT EXISTS` block the Bun server
  * runs at boot — its schema is applied out-of-band by wrangler, so on D1 these
  * files *are* the schema. Rather than keep a hand-written copy of the DDL that
- * silently drifts from the one the local database uses, both are generated from
- * the same constant.
+ * silently drifts from the one the local database uses, all of them are
+ * generated from the same constant.
  *
  *   bun run db:schema     # regenerate after changing SCHEMA
  *
- * 0002 is generated for a reason that cost real money to learn. It was
- * hand-written when the human game became a benchmark, and then `operators`,
- * `pair_codes`, `runs.operator_id` and both `probes` columns were added to
- * SCHEMA over the following days without anyone touching it. It rotted into a
- * file that dropped four tables irreversibly and then built a schema the server
- * could not issue a single normal query against — registration, pairing and
- * every solve write would have failed at the first request, with the DROPs
- * already committed. Generating it is what makes that class of mistake
+ * The migrations past 0001 are generated for a reason that cost real money to
+ * learn. 0002 was hand-written when the human game became a benchmark, and then
+ * four tables and two columns were added to SCHEMA over the following days
+ * without anyone touching it. It rotted into a file that dropped four tables
+ * irreversibly and then built a schema the server could not issue a single
+ * normal query against. Generating them is what makes that class of mistake
  * impossible rather than merely unlikely.
  */
 import { SCHEMA } from "../server/store";
@@ -35,9 +33,9 @@ await Bun.write(url("0001_init.sql"), [...HEADER, ...body, ""].join("\n"));
 
 /**
  * The tables the human game used. Dropped rather than migrated: a benchmark row
- * records harness, wall clock and probe counts, none of which was ever
- * collected for a human player, so there is nothing to convert and inventing it
- * would be worse than starting clean.
+ * records model, wall clock and probe counts, none of which was ever collected
+ * for a human player, so there is nothing to convert and inventing it would be
+ * worse than starting clean.
  */
 const LEGACY = ["progress", "solves", "sessions", "users"];
 
@@ -61,4 +59,68 @@ await Bun.write(
   ].join("\n"),
 );
 
-console.log(`wrote ${SCHEMA.length} statements to 0001_init.sql and 0002_agent_benchmark.sql`);
+/**
+ * 0003 is the browser-to-API migration.
+ *
+ * pixe stopped being a browser benchmark: the device-code pairing flow, the
+ * input-event attestation and the execution binding are all gone, and with them
+ * the two tables and three columns that only existed to serve them. What
+ * replaces the human-vouched `harness` is a self-declared `model` + `provider`
+ * pair — unverified, and the schema comment says so.
+ *
+ * Order matters here and SQLite will tell you so at the worst moment:
+ *
+ *  - `runs_operator` indexes `operator_id`, and SQLite refuses to drop a column
+ *    an index depends on. The index goes first.
+ *  - `harness` is copied into `model` before it is dropped, so an existing
+ *    deployment keeps its labels instead of ending up with a table of empty
+ *    strings. `provider` cannot be recovered from anything and is backfilled
+ *    with a marker that reads as what it is.
+ *  - `model` and `provider` are added as plain nullable columns. SQLite cannot
+ *    add a NOT NULL column without a default, and a default on an identity
+ *    column would be a lie waiting to be printed. Fresh databases get the NOT
+ *    NULL from 0001; a migrated one carries slightly weaker constraints, which
+ *    is the honest trade.
+ *  - `pair_codes` references `runs`, so it is dropped before `operators`.
+ */
+const MIGRATE = [
+  "-- Runs that never finished pairing were abandoned onboarding, not participants.",
+  "DELETE FROM runs WHERE status = 'pending';",
+  "",
+  "DROP INDEX IF EXISTS runs_operator;",
+  "DROP TABLE IF EXISTS pair_codes;",
+  "DROP TABLE IF EXISTS operators;",
+  "",
+  "ALTER TABLE runs ADD COLUMN model TEXT;",
+  "ALTER TABLE runs ADD COLUMN provider TEXT;",
+  "UPDATE runs SET model = COALESCE(harness, 'unknown') WHERE model IS NULL;",
+  "UPDATE runs SET provider = 'undeclared' WHERE provider IS NULL;",
+  "ALTER TABLE runs DROP COLUMN harness;",
+  "ALTER TABLE runs DROP COLUMN operator_id;",
+  "",
+  "-- Attested input events no longer exist, so neither does the column.",
+  "ALTER TABLE run_solves DROP COLUMN events;",
+];
+
+await Bun.write(
+  url("0003_api_only.sql"),
+  [
+    ...HEADER,
+    "-- Drops the browser/pairing/attestation era: the device-code tables, the",
+    "-- human-vouched harness, and the attested event count. Destructive and",
+    "-- irreversible: take a backup first.",
+    "--",
+    "--   bunx wrangler d1 export pixe-db --remote --output backup.sql",
+    "--   bunx wrangler d1 execute pixe-db --remote --file migrations/0003_api_only.sql",
+    "",
+    ...MIGRATE,
+    "",
+    "-- The current schema verbatim, so a database that never ran 0001 ends up",
+    "-- with the same tables as one that did.",
+    "",
+    ...body,
+    "",
+  ].join("\n"),
+);
+
+console.log(`wrote ${SCHEMA.length} statements to 0001, 0002 and 0003`);

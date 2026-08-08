@@ -12,12 +12,11 @@
  * `bun:sqlite` store, so what it proves is real. Delete it once the routes are
  * wired if it has stopped earning its place.
  *
- * Every harness here is named `FAKE-…` and every config names a
- * `demo-model-…`. That is not decoration: a seeded database that looks
- * plausible is exactly the thing that ends up screenshotted as a result. The
- * configs are shaped like real ones — a planner-and-subagents line, a plain
- * single-model line — because the column has to be exercised as the free prose
- * it is rather than as a tidy enum.
+ * Every model here is named `FAKE-…` and every provider `fake-…`. That is not
+ * decoration: a seeded database that looks plausible is exactly the thing that
+ * ends up screenshotted as a result. The configs are shaped like real ones — a
+ * planner-and-subagents line, a plain single-model line — because the column
+ * has to be exercised as the free prose it is rather than as a tidy enum.
  */
 
 import { encodeGrid } from "../shared/codec";
@@ -28,9 +27,10 @@ import { sqliteStore } from "../server/store-sqlite";
 import type { RunRow } from "../server/store";
 
 interface Recipe {
-  /** The benchmarked identity. In a real database a human typed this. */
-  harness: string;
-  /** Free prose about the setup. Displayed under the harness and ranked by nothing. */
+  /** The benchmarked identity, declared by the run and never verified. */
+  model: string;
+  provider: string;
+  /** Free prose about the setup. Displayed under the model and ranked by nothing. */
   config: string | null;
   solves: number;
   /** Seconds on the first puzzle. */
@@ -77,19 +77,19 @@ interface Recipe {
 
 const RECIPES: Recipe[] = [
   {
-    harness: "FAKE-kestrel", config: "demo-model-a",
+    model: "FAKE-kestrel", provider: "fake-labs", config: "demo-model-a",
     solves: 58, start: 96, floor: 21, halfLife: 14, jitter: 0.3, probeFactor: 1,
     abandonRate: 0.04, giveUpAt: 0.9,
     declaresTokens: 1, declaresCost: 1, tokenRate: 620, usdPerMTok: 9,
   },
   {
-    harness: "FAKE-heron", config: "demo-model-b planner + demo-model-a subagents",
+    model: "FAKE-heron", provider: "fake-labs", config: "demo-model-b planner + demo-model-a subagents",
     solves: 44, start: 132, floor: 44, halfLife: 20, jitter: 0.34, probeFactor: 0.9,
     abandonRate: 0.1, giveUpAt: 1.1,
     declaresTokens: 0, declaresCost: 0, tokenRate: 0, usdPerMTok: 0,
   },
   {
-    harness: "FAKE-shrike", config: "demo-model-a, screenshots only",
+    model: "FAKE-shrike", provider: "fake-cloud", config: "demo-model-a, screenshots only",
     solves: 36, start: 190, floor: 74, halfLife: 26, jitter: 0.28, probeFactor: 1.1,
     abandonRate: 0.06, giveUpAt: 1.2,
     declaresTokens: 1, declaresCost: 1, tokenRate: 410, usdPerMTok: 14,
@@ -98,7 +98,7 @@ const RECIPES: Recipe[] = [
     // Never gets faster: the flat fit is a result, and the page has to show it.
     // It never gets thriftier with its looks either, which is the same result
     // said in the other column.
-    harness: "FAKE-plover", config: "demo-model-c",
+    model: "FAKE-plover", provider: "fake-cloud", config: "demo-model-c",
     solves: 27, start: 88, floor: 88, halfLife: Infinity, jitter: 0.42, probeFactor: 1.4,
     abandonRate: 0, giveUpAt: 1,
     declaresTokens: 0, declaresCost: 0, tokenRate: 0, usdPerMTok: 0,
@@ -106,7 +106,7 @@ const RECIPES: Recipe[] = [
   {
     // Config is optional, and a run without one has to render as a blank rather
     // than as anything that reads like a value.
-    harness: "FAKE-godwit", config: null,
+    model: "FAKE-godwit", provider: "fake-labs", config: null,
     solves: 19, start: 154, floor: 60, halfLife: 9, jitter: 0.26, probeFactor: 0.95,
     abandonRate: 0.12, giveUpAt: 0.8,
     declaresTokens: 1, declaresCost: 0, tokenRate: 900, usdPerMTok: 0,
@@ -116,7 +116,7 @@ const RECIPES: Recipe[] = [
     // worst on the page by probes: it paints and resubmits until something
     // sticks and drops whatever does not. Sorting by probes has to move it from
     // near the top to the bottom, or the column is not being read.
-    harness: "FAKE-avocet", config: "demo-model-c, 8 parallel painters",
+    model: "FAKE-avocet", provider: "fake-cloud", config: "demo-model-c, 8 parallel painters",
     solves: 12, start: 41, floor: 17, halfLife: 5, jitter: 0.22, probeFactor: 3.4,
     abandonRate: 0.62, giveUpAt: 0.7,
     declaresTokens: 0.35, declaresCost: 0.35, tokenRate: 1500, usdPerMTok: 22,
@@ -125,7 +125,7 @@ const RECIPES: Recipe[] = [
     // The slow endpoint. Last on the clock by a wide margin and mid-table on
     // probes, because a congested provider changes how long a run takes and not
     // how many times it had to look at the board.
-    harness: "FAKE-dunlin", config: "demo-model-d, rate-limited endpoint",
+    model: "FAKE-dunlin", provider: "fake-labs", config: "demo-model-d, rate-limited endpoint",
     solves: 6, start: 240, floor: 120, halfLife: 30, jitter: 0.5, probeFactor: 0.8,
     abandonRate: 0.35, giveUpAt: 1.4,
     declaresTokens: 0, declaresCost: 0, tokenRate: 0, usdPerMTok: 0,
@@ -186,16 +186,16 @@ async function seed(): Promise<void> {
   const now = Date.now();
 
   for (const [n, r] of RECIPES.entries()) {
-    const rng = new Rng(`pixe/seed-bench/${r.harness}`);
+    const rng = new Rng(`pixe/seed-bench/${r.model}`);
     const id = `FAKESEED${String(n).padStart(2, "0")}${rng.int(1e5).toString(36)}`.slice(0, 16);
     const startedAt = now - (RECIPES.length - n) * 6 * HOUR;
 
     const run: RunRow = {
       id,
       secret: `seed-not-a-secret-${n}`,
-      harness: r.harness,
+      model: r.model,
+      provider: r.provider,
       config: r.config,
-      operator_id: null,
       dialect: `seed-dialect-${n}`,
       created_at: startedAt,
       last_at: startedAt,
@@ -254,7 +254,6 @@ async function seed(): Promise<void> {
         wall_ms,
         api_calls: rng.range(6, 40),
         probes: probesFor(rng, r, idx, difficulty),
-        events: rng.range(120, 2_400),
         tokens_in: tokensIn,
         tokens_out: tokensOut,
         cost_micro: reportsCost ? Math.round((total / 1_000_000) * r.usdPerMTok * 1_000_000) : null,
@@ -267,7 +266,7 @@ async function seed(): Promise<void> {
     }
     await store.touchRun(id, at);
     console.log(
-      `  ${r.harness.padEnd(14)} ${String(r.solves).padStart(3)} solves  ${String(abandoned).padStart(3)} abandoned`,
+      `  ${r.model.padEnd(14)} ${String(r.solves).padStart(3)} solves  ${String(abandoned).padStart(3)} abandoned`,
     );
   }
 }
@@ -297,5 +296,5 @@ if (process.argv.includes("--serve")) {
 } else {
   console.log(`seeding ${process.env.PIXE_DB ?? "./data/pixe.sqlite"} with FABRICATED runs`);
   await seed();
-  console.log("done — every harness here is named FAKE-… on purpose");
+  console.log("done — every model here is named FAKE-… on purpose");
 }

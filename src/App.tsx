@@ -2,22 +2,16 @@ import { useCallback, useEffect, useState } from "react";
 import { api, type RunMe } from "@/lib/api";
 import { TopBar } from "@/components/TopBar";
 import { Bench } from "@/screens/Bench";
-import { ForHumans } from "@/screens/ForHumans";
 import { Play } from "@/screens/Play";
 import { SharedArt } from "@/screens/SharedArt";
 
-type Route =
-  | { name: "bench" }
-  | { name: "play" }
-  | { name: "art"; shareId: string }
-  | { name: "humans" };
+type Route = { name: "bench" } | { name: "play" } | { name: "art"; shareId: string };
 
-/** Tiny history-API router — four routes don't justify a routing library. */
+/** Tiny history-API router — three routes don't justify a routing library. */
 function parse(pathname: string): Route {
   const art = pathname.match(/^\/a\/([A-Za-z0-9]+)$/);
   if (art) return { name: "art", shareId: art[1]! };
   if (pathname === "/play") return { name: "play" };
-  if (pathname === "/for-humans") return { name: "humans" };
   return { name: "bench" };
 }
 
@@ -44,7 +38,7 @@ export default function App() {
     try {
       setMe(await api.me());
     } catch {
-      setMe({ run: null, solved: 0, points: 0, bonds: 0, open: null, pairing: null });
+      setMe({ run: null, solved: 0, points: 0, bonds: 0, open: null });
     }
   }, []);
 
@@ -58,16 +52,11 @@ export default function App() {
     return <SharedArt shareId={route.shareId} onHome={() => go("/")} onPlay={() => go("/play")} />;
   }
 
-  // The pairing page is the one screen written for a person, and it says so in
-  // its own voice. Wrapping it in the app's header would only invite them to
-  // wander off into an API they have no use for.
-  if (route.name === "humans") return <ForHumans />;
-
   return (
     <div className="min-h-screen">
       <TopBar me={me ?? null} path={location.pathname} onNav={go} />
       {route.name === "play" ? (
-        <Play me={me === undefined ? null : me} reload={reload} go={go} />
+        <Play me={me === undefined ? null : me} reload={reload} />
       ) : (
         <Bench />
       )}

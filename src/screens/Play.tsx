@@ -7,7 +7,6 @@ import {
   ApiError,
   type Banked,
   type Issue,
-  type Pairing,
   type RunMe,
   type RunSummary,
 } from "@/lib/api";
@@ -26,7 +25,6 @@ import { cn } from "@/lib/utils";
 interface Props {
   me: RunMe | null;
   reload(): Promise<void>;
-  go(path: string): void;
 }
 
 /**
@@ -38,7 +36,7 @@ interface Props {
  * Four states, in the order a run passes through them: no run, a run waiting on
  * a human, a run with nothing open, and a board.
  */
-export function Play({ me, reload, go }: Props) {
+export function Play({ me, reload }: Props) {
   if (!me) {
     return (
       <div className="grid min-h-[50vh] place-items-center">
@@ -47,7 +45,6 @@ export function Play({ me, reload, go }: Props) {
     );
   }
   if (!me.run) return <StartRun reload={reload} />;
-  if (me.run.status === "pending") return <WaitingForAHuman me={me} reload={reload} go={go} />;
   if (me.run.status !== "open") {
     return (
       <Frame>
@@ -71,15 +68,19 @@ function Frame({ children }: { children: React.ReactNode }) {
 /* Getting a run                                                       */
 /* ------------------------------------------------------------------ */
 
-const PAIRING_STASH = "pixe:pairing";
-
 /**
  * An agent registers itself over the API and never sees this form. It is here
  * for the person who opened the page to find out what pixe is, and for the one
  * driving a browser by hand.
+ *
+ * Two fields, and neither is checked. `model` and `provider` are what a
+ * leaderboard groups on, and the honest statement about them is on the form
+ * itself: nothing verifies either, and nothing ranks on them.
  */
 function StartRun({ reload }: { reload(): Promise<void> }) {
-  const [operatorKey, setOperatorKey] = useState("");
+  const [model, setModel] = useState("");
+  const [provider, setProvider] = useState("");
+  const [config, setConfig] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -88,11 +89,7 @@ function StartRun({ reload }: { reload(): Promise<void> }) {
     setBusy(true);
     setError(null);
     try {
-      const reg = await api.register(operatorKey.trim() || undefined);
-      // The pairing code is handed out once, with the registration. Keeping it
-      // here means a reload does not strand a run whose human is still typing.
-      if (reg.pairing) localStorage.setItem(PAIRING_STASH, JSON.stringify(reg.pairing));
-      else localStorage.removeItem(PAIRING_STASH);
+      await api.register(model.trim(), provider.trim(), config.trim() || undefined);
       await reload();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not register a run.");
@@ -109,24 +106,38 @@ function StartRun({ reload }: { reload(): Promise<void> }) {
         server accepted for the last. Nothing tells you the laws. You paint, the board reacts.
       </p>
       <p className="mt-2 t-small text-muted">
-        An agent does this over the API instead: <code>POST /api/run</code>, then{" "}
+        An agent does this over the API instead: <code>POST /api/bench/runs</code>, then{" "}
         <code>/agents.txt</code> is the whole spec.
       </p>
 
-      {/* One field, because a run declares nothing about itself: the "Agent"
-          and "Model" boxes are gone along with the fields behind them. The
-          label stays exactly "Operator key" and the button stays "Register" —
-          the reference solver drives this form by those two strings. */}
       <form onSubmit={start} className="mt-7 flex flex-col gap-4">
         <label className="block">
-          <span className="t-micro text-muted">Operator key</span>
+          <span className="t-micro text-muted">Model</span>
+          <Input
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            placeholder="claude-opus-5"
+            spellCheck={false}
+          />
+        </label>
+        <label className="block">
+          <span className="t-micro text-muted">Provider</span>
+          <Input
+            value={provider}
+            onChange={(e) => setProvider(e.target.value)}
+            placeholder="anthropic"
+            spellCheck={false}
+          />
+        </label>
+        <label className="block">
+          <span className="t-micro text-muted">Setup note</span>
           <span className="mt-0.5 mb-1 block t-small text-muted">
-            Optional. If a human has vouched for you before, this skips the pairing step entirely.
+            Optional prose about the setup. Displayed as written and ranked by nothing.
           </span>
           <Input
-            value={operatorKey}
-            onChange={(e) => setOperatorKey(e.target.value)}
-            placeholder="pxop_…"
+            value={config}
+            onChange={(e) => setConfig(e.target.value)}
+            placeholder="8 parallel painters"
             spellCheck={false}
           />
         </label>
@@ -137,91 +148,13 @@ function StartRun({ reload }: { reload(): Promise<void> }) {
           {busy ? <Loader2 className="size-4 animate-spin" /> : "Register"}
         </Button>
         <p className="t-small text-muted">
-          Without a key you are handed a code to read to a human, who says which harness is driving
-          you. That answer is the only identity the benchmark publishes — pixe does not record
-          which model ran, and cannot produce a model ranking. It ranks on wall clock and on how
-          many times a run had to look at the board, neither of which can be talked down.
+          Nothing checks either name. They are recorded exactly as typed and label the rows that
+          the measured columns rank — wall clock, and how many times a run had to look at the
+          board. Neither of those can be talked down.
         </p>
       </form>
     </Frame>
   );
-}
-
-/** A registered run holds a real token and can do exactly two things with it:
- *  read its own state, and wait. */
-function WaitingForAHuman({
-  me,
-  reload,
-  go,
-}: {
-  me: RunMe;
-  reload(): Promise<void>;
-  go(path: string): void;
-}) {
-  const stashed = useMemo(() => readStash(), []);
-  const pairing = me.pairing ?? stashed;
-  const code = pairing?.userCode ?? stashed?.userCode ?? null;
-  const interval = pairing?.pollIntervalMs ?? 3000;
-
-  useEffect(() => {
-    const t = setInterval(() => void reload(), interval);
-    return () => clearInterval(t);
-  }, [reload, interval]);
-
-  const link = code ? `/for-humans?code=${code}` : "/for-humans";
-
-  return (
-    /* The heading stays "Ask your human" and the code stays an ABCD-EFGH
-       string on its own line: the solver reads this screen to know it is
-       blocked on pairing, and reads the code out to its operator. */
-    <Frame>
-      <h1 className="t-display">Ask your human</h1>
-      <p className="mt-3 text-muted">
-        {pairing?.message ??
-          "A person has to vouch for this run once before the server will issue it a board."}{" "}
-        They are asked which harness is driving — the one claim on the table that only they know.
-      </p>
-
-      {code ? (
-        <div className="mt-7 rule-t rule-b py-7 text-center">
-          <p className="t-micro text-muted">Your code</p>
-          <p className="mt-2 t-num text-[32px] leading-none tracking-[0.14em]">{code}</p>
-        </div>
-      ) : (
-        <p className="mt-7 rule-t rule-b py-5 t-small text-muted">
-          The code was handed out with the registration and is not repeated by the API. If you have
-          lost it, register again for a fresh one.
-        </p>
-      )}
-
-      <p className="mt-5 t-small text-muted">
-        Send them to <span className="text-ink">/for-humans</span> with it. Twenty seconds, once per
-        person — they walk away with a key that pairs every run they start after this one.
-      </p>
-
-      <div className="mt-4 flex flex-wrap gap-2">
-        <Button onClick={() => go(link)}>Open the pairing page</Button>
-        <Button variant="outline" onClick={() => void reload()}>
-          Check again
-        </Button>
-      </div>
-
-      {pairing?.expired && (
-        <p className="mt-3 t-small text-bad">
-          That code has expired. Register again for a fresh one.
-        </p>
-      )}
-    </Frame>
-  );
-}
-
-function readStash(): Pairing | null {
-  try {
-    const raw = localStorage.getItem(PAIRING_STASH);
-    return raw ? (JSON.parse(raw) as Pairing) : null;
-  } catch {
-    return null;
-  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -241,60 +174,76 @@ function Open({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // A vouched-for run has no use for its old code, and a stale one on screen
-  // would send the next human to a page that will refuse it.
-  useEffect(() => localStorage.removeItem(PAIRING_STASH), []);
-
-  // Re-reading the board after a reload is a legitimate recovery path: it hands
-  // back a fresh receipt, which only rewinds this client's own attested tally.
+  /**
+   * A board the run already holds, restored from run state.
+   *
+   * There is no "read the open board again" endpoint any more, and there should
+   * not be: the agent holds its own grid and the server holds the clock. What
+   * run state carries is the rung, the key and the moment it was issued, which
+   * is everything the page needs to keep painting. The title and point value are
+   * the two things a reload cannot recover, and neither is load-bearing.
+   */
   useEffect(() => {
     if (!open) return;
-    let live = true;
-    api
-      .board()
-      .then((b) => live && setIssue(b))
-      .catch((err: unknown) => live && setError(err instanceof ApiError ? err.message : "No board."));
-    return () => {
-      live = false;
-    };
+    setIssue({ idx: open.idx, key: open.key, title: open.key, points: 0, issuedAt: open.issuedAt });
   }, [open?.idx, open?.key]);
 
   const next = useCallback(async () => {
     setBusy(true);
     setError(null);
     try {
-      setIssue(await api.next());
+      setIssue(await api.next(run.runId));
       await reload();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not take the next puzzle.");
     } finally {
       setBusy(false);
     }
-  }, [reload]);
+  }, [reload, run.runId]);
+
+  /** Drop the board, then draw the next rung. Two requests because abandoning
+   *  is a decision the API makes you state, not a side effect of asking for
+   *  work — and it is refused for the first minute either way. */
+  const abandon = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.abandon(run.runId);
+      setIssue(await api.next(run.runId));
+      await reload();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not abandon this board.");
+    } finally {
+      setBusy(false);
+    }
+  }, [reload, run.runId]);
 
   if (!issue) {
     return (
       <Frame>
-        <h1 className="t-display">{open ? "Fetching your board…" : "Nothing open"}</h1>
+        <h1 className="t-display">Nothing open</h1>
         <p className="mt-3 text-muted">
-          {open
-            ? "You already hold rung " + open.idx + "."
-            : "Take the next rung of the chain. Its key comes out of the last grid the server accepted from you, so there is no way to look ahead."}
+          Take the next rung of the chain. Its key comes out of the last grid the server accepted
+          from you, so there is no way to look ahead.
         </p>
         {error && <p className="mt-3 t-small text-bad">{error}</p>}
-        {/* "Take the next puzzle" is a documented seam — the solver clicks it
-            by name. */}
-        {(!open || error) && (
-          <Button className="mt-5" onClick={() => void next()} disabled={busy}>
-            {busy ? <Loader2 className="size-4 animate-spin" /> : "Take the next puzzle"}
-          </Button>
-        )}
+        <Button className="mt-5" onClick={() => void next()} disabled={busy}>
+          {busy ? <Loader2 className="size-4 animate-spin" /> : "Take the next puzzle"}
+        </Button>
       </Frame>
     );
   }
 
   return (
-    <Studio key={issue.idx} run={run} issue={issue} onNext={next} nexting={busy} nextError={error} />
+    <Studio
+      key={issue.idx}
+      run={run}
+      issue={issue}
+      onNext={next}
+      onAbandon={abandon}
+      nexting={busy}
+      nextError={error}
+    />
   );
 }
 
@@ -306,18 +255,20 @@ function Studio({
   run,
   issue,
   onNext,
+  onAbandon,
   nexting,
   nextError,
 }: {
   run: RunSummary;
   issue: Issue;
   onNext(): Promise<void>;
+  onAbandon(): Promise<void>;
   nexting: boolean;
   /** Usually the sixty-second hold before a board may be abandoned. */
   nextError: string | null;
 }) {
   const state = usePuzzle(run.runId, issue);
-  const { board, emit } = state;
+  const { board, probe } = state;
 
   const [tool, setTool] = useState<Tool>("brush");
   const [brush, setBrush] = useState(4);
@@ -353,25 +304,22 @@ function Studio({
     (h: number) => {
       setHue(h);
       setTool((t) => (t === "eraser" || t === "picker" ? "brush" : t));
-      emit("pick");
     },
-    [emit],
+    [],
   );
 
   const chooseTool = useCallback(
     (t: Tool) => {
       setTool(t);
-      emit("pick");
     },
-    [emit],
+    [],
   );
 
   const sizeBrush = useCallback(
     (n: number) => {
       setBrush(n);
-      emit("pick");
     },
-    [emit],
+    [],
   );
 
   const handlers = useMemo(
@@ -412,13 +360,11 @@ function Studio({
         strokeFrom.current = null;
         if (!board.commit()) return;
         state.touch();
-        // `Board.version` counts cells actually written, so the difference over
-        // a gesture is exactly how many cells it touched — no second tally to
-        // keep and none to get wrong.
-        emit(tool === "bucket" ? "paint" : "stroke", {
-          n: from ? board.version - from.version : 1,
-          d: from ? Date.now() - from.at : 0,
-        });
+        void from;
+        // Every look at the board is a submit and every submit is a probe, so
+        // the page pays exactly what a runner script pays. The debounce inside
+        // `usePuzzle` is what keeps a drag from costing thirty of them.
+        probe();
       },
       onHover(x: number, y: number) {
         setHover({ x, y });
@@ -427,32 +373,31 @@ function Studio({
         setHover(null);
       },
     }),
-    [board, tool, brush, mirror, activeHue, state, emit, pickHue],
+    [board, tool, brush, mirror, activeHue, state, probe, pickHue],
   );
 
   const mutate = useCallback(
     (fn: (b: Board) => void) => {
-      const before = board.version;
       board.begin();
       fn(board);
       if (!board.commit()) return;
       state.touch();
-      emit("paint", { n: board.version - before });
+      probe();
     },
-    [board, state, emit],
+    [board, state, probe],
   );
 
   const undo = useCallback(() => {
     if (!board.undo()) return;
     state.touch();
-    emit("undo");
-  }, [board, state, emit]);
+    probe();
+  }, [board, state, probe]);
 
   const redo = useCallback(() => {
     if (!board.redo()) return;
     state.touch();
-    emit("undo");
-  }, [board, state, emit]);
+    probe();
+  }, [board, state, probe]);
 
   /* --- keyboard ---------------------------------------------------- */
 
@@ -529,10 +474,8 @@ function Studio({
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <div className="min-w-0">
           <h1 className="t-lead truncate">{issue.title}</h1>
-          {/* The solver watches the attested-events count here to know the page
-              is still talking to the server. Keep the shape of this line. */}
           <p className="t-num text-[11px] text-muted">
-            Rung {issue.idx} · {issue.key} · {state.events} attested events
+            Rung {issue.idx} · {issue.key} · {state.probes} probes
           </p>
         </div>
         <div className="ml-auto flex items-center gap-2">
@@ -670,7 +613,7 @@ function Studio({
               variant="ghost"
               size="sm"
               className="w-full"
-              onClick={() => void onNext()}
+              onClick={() => void onAbandon()}
               disabled={nexting}
             >
               {nexting ? <Loader2 className="size-3.5 animate-spin" /> : "Abandon this board"}
@@ -739,7 +682,7 @@ function Solved({
           <DialogDescription>
             {banked.alreadySolved
               ? "This rung was already banked, so it pays nothing twice."
-              : `${(banked.wallMs / 1000).toFixed(1)}s from issue to accepted, over ${banked.apiCalls} requests and ${banked.events} attested events.`}
+              : `${(banked.wallMs / 1000).toFixed(1)}s from issue to accepted, over ${banked.apiCalls} requests and ${banked.probes} probes.`}
           </DialogDescription>
         </DialogHeader>
 

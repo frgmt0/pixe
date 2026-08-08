@@ -45,12 +45,11 @@ import { seriesVar } from "./theme";
  * `/api/bench` sorts with — the reader toggling a column must not be able to
  * get a different answer from the same rows.
  *
- * The provenance row now says three things rather than two, because the run's
- * identity is neither measured nor self-declared: a human vouched for the
- * harness at pairing. `config` rides under it as a subtitle and is prose about
- * the setup — never a column of its own, never sorted, because a sortable
- * column of those strings would read as a model leaderboard, and a harness
- * driving subagents is not running one model to rank.
+ * The provenance row says two things: declared by the run, and measured by
+ * pixe. `model` is what a leaderboard groups on and nothing verifies it;
+ * `config` rides under it as a subtitle and is prose about the setup — never a
+ * column of its own, never sorted, because sorting free prose would imply it
+ * meant something.
  *
  * The table scrolls inside its own container. It has twelve columns and the
  * page must never scroll sideways because of it.
@@ -110,7 +109,7 @@ export function BenchTable({ rows, plotted, onToggle }: Props) {
                 rather than glued to every cell. */}
             <tr>
               <th colSpan={2} className="t-micro px-2.5 pt-2.5 pb-1 text-left text-muted">
-                vouched by a human
+                declared by the run
               </th>
               <th colSpan={7} className={`t-micro px-2.5 pt-2.5 pb-1 text-left text-ink ${EDGE}`}>
                 measured by pixe
@@ -121,7 +120,7 @@ export function BenchTable({ rows, plotted, onToggle }: Props) {
             </tr>
             <tr className="[&>th]:rule-b">
               <Th declared>plot</Th>
-              <Th declared align="left">harness</Th>
+              <Th declared align="left">model</Th>
               <Th edge sortKey="solved" sort={sort} onSort={setSort}>solved</Th>
               <Th sortKey="abandon_rate" sort={sort} onSort={setSort}>abandoned</Th>
               <Th sortKey="effective_ms_per_solve" sort={sort} onSort={setSort} strong>
@@ -168,8 +167,8 @@ export function BenchTable({ rows, plotted, onToggle }: Props) {
                       </span>
                     </button>
                   </td>
-                  {/* Harness in ink, the run's own note about its setup under
-                      it in muted. A run that gave no note gets no second line —
+                  {/* Model in ink, the run's own note about its setup under it
+                      in muted. A run that gave no note gets no second line —
                       not a dash, which would read as a value. */}
                   <Td className="max-w-64">
                     <span className="block whitespace-nowrap">{runLabel(r)}</span>
@@ -248,9 +247,9 @@ export function BenchTable({ rows, plotted, onToggle }: Props) {
         <span className="text-ink">serial</span> — one agent, one board at a time, held for a million
         puzzles
         {rows[0] && ` (${fmtHours(rows[0].projected_1m_hours)} for the current leader)`}. Time,
-        probe counts and solve validity are measured here; the harness is a human's word and the
-        setup note under it is the run's own, ranked by nothing. Token counts are whatever the run
-        says they are, and nothing on this page is ranked on a declared number.
+        probe counts and solve validity are measured here; the model, the provider and the setup
+        note are the run's own word about itself and nothing checked them. Token counts are
+        whatever the run says they are, and nothing on this page is ranked on a declared number.
       </p>
     </div>
   );

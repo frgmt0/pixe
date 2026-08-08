@@ -1,6 +1,5 @@
 import { dialectPuzzle } from "../shared/dialect";
 import { handleBench, handleBenchPoints } from "./bench";
-import { handlePairApi } from "./pairing";
 import { handleRunApi, type RunDeps } from "./runs";
 import type { Store } from "./store";
 
@@ -24,7 +23,9 @@ function json(data: unknown, init: ResponseInit = {}): Response {
   });
 }
 
-const fail = (status: number, error: string) => json({ error }, { status });
+/** Errors carry a machine code as well as a sentence — `public/agents.txt`
+ *  publishes the code list, so a route that answers without one is off-spec. */
+const fail = (status: number, error: string, code: string) => json({ error, code }, { status });
 
 /* ------------------------------------------------------------------ */
 /* Routes                                                              */
@@ -34,17 +35,11 @@ export async function handleApi(req: Request, url: URL, deps: Deps): Promise<Res
   const { store } = deps;
   const path = url.pathname;
 
-  // Pairing goes first and deliberately so. It owns `POST /api/run` outright,
-  // and it intercepts `GET /api/run/me` only while a run is still `pending` —
-  // handing back `null` the moment it is paired, so the run handler below
-  // answers everything else. Reversing these two would let a run register
-  // without a human ever being asked to vouch for it.
-  const paired = await handlePairApi(req, url, deps);
-  if (paired) return paired;
-
-  // The chained sequence, attestation and submission — every route scoped to a
-  // single run. Answers `null` for anything it does not own, so this file stays
-  // the map of the API rather than a copy of it.
+  // Registration, the chained sequence, submission and abandonment — every
+  // route scoped to a single run, all under `/api/bench/runs`. Answers `null`
+  // for anything it does not own, so this file stays the map of the API rather
+  // than a copy of it. It goes first because `/api/bench/runs` would otherwise
+  // be shadowed by nothing at all and fall through to the 404.
   const run = await handleRunApi(req, url, deps satisfies RunDeps);
   if (run) return run;
 
@@ -59,7 +54,8 @@ export async function handleApi(req: Request, url: URL, deps: Deps): Promise<Res
     const rows = (await store.recentArt(24)).map((r) => ({
       shareId: r.share_id,
       key: r.puzzle_key,
-      harness: r.harness,
+      model: r.model,
+      provider: r.provider,
       config: r.config,
       bonds: r.bonds,
       points: r.points,
@@ -72,7 +68,7 @@ export async function handleApi(req: Request, url: URL, deps: Deps): Promise<Res
   const art = path.match(/^\/api\/art\/([A-Za-z0-9]{1,32})$/);
   if (art) {
     const row = await store.artByShare(art[1]!);
-    if (!row) return fail(404, "No such artwork.");
+    if (!row) return fail(404, "No such artwork.", "not_found");
 
     // Derived through the run's own dialect, not the base generator: every run
     // plays a perturbed variant, so `generatePuzzle(key)` would reveal a set of
@@ -90,7 +86,8 @@ export async function handleApi(req: Request, url: URL, deps: Deps): Promise<Res
       scheme: puzzle.scheme,
       bondPairs: puzzle.bonds,
       parBonds: puzzle.parBonds,
-      harness: row.harness,
+      model: row.model,
+      provider: row.provider,
       config: row.config,
       points: row.points,
       bonds: row.bonds,
@@ -99,7 +96,7 @@ export async function handleApi(req: Request, url: URL, deps: Deps): Promise<Res
     });
   }
 
-  return fail(404, "No such endpoint.");
+  return fail(404, "No such endpoint.", "not_found");
 }
 
 /** Shared error envelope, so a thrown route never leaks a stack to the client. */
@@ -108,6 +105,6 @@ export async function handleApiSafe(req: Request, url: URL, deps: Deps): Promise
     return await handleApi(req, url, deps);
   } catch (err) {
     console.error("api error", url.pathname, err);
-    return fail(500, "Something broke on our end.");
+    return fail(500, "Something broke on our end.", "server_error");
   }
 }

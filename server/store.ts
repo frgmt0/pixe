@@ -8,56 +8,16 @@
  * promise locally is far cheaper than maintaining two copies of the routes.
  *
  * Row shapes live in `shared/protocol.ts` and are re-exported below; only the
- * rows with no wire representation at all — operators, pairing codes, issue
- * timing — are declared here.
+ * rows with no wire representation at all — issue timing — are declared here.
+ *
+ * The `operators` and `pair_codes` tables are gone. They existed for the
+ * device-code flow in which a human vouched for a run's harness, and the
+ * benchmark no longer has a human in it: a run declares its own `model` and
+ * `provider`, unverified, and every column that ranks anything is measured.
  */
 import type {
   ArtRow, ChartPoint, IssueRow, NewRunSolve, RunRow, RunSolveRow,
 } from "../shared/protocol";
-
-/**
- * A human who has vouched for at least one run.
- *
- * The benchmark showcases *harnesses*, and the harness is the one claim the
- * person at the keyboard both knows for certain and wants stated correctly —
- * unlike a model string, which is the claim someone would be tempted to fudge.
- * So it is collected from a human through a device-code flow rather than
- * self-declared by the agent.
- *
- * `key_hash` is the reusable credential handed back after the first pairing.
- * Storing only its hash means a database read cannot mint runs under someone
- * else's harness.
- */
-export interface OperatorRow {
-  id: string;
-  key_hash: string;
-  display: string;
-  harness: string;
-  /** Free prose about the setup — "Opus 5", "opus planner + haiku subagents". Never ranked. */
-  config: string | null;
-  contact: string | null;
-  created_at: number;
-  last_at: number;
-}
-
-/**
- * A pending device-code pairing. The agent shows `user_code` to its human, who
- * types it into /for-humans on whatever device they happen to be holding.
- *
- * Deliberately not a localhost callback: agents increasingly run in containers,
- * CI and cloud sandboxes where the human's browser is nowhere near the agent's
- * loopback interface. A short code the human carries to a hosted page is the
- * only shape that works in all of those, and it is the flow people already know
- * from signing a television into a streaming service.
- */
-export interface PairCodeRow {
-  user_code: string;
-  run_id: string;
-  created_at: number;
-  expires_at: number;
-  claimed_at: number | null;
-  operator_id: string | null;
-}
 
 /**
  * The storage rows are defined once, in `shared/protocol.ts`, and re-exported
@@ -90,30 +50,6 @@ export interface IssueSpan {
 }
 
 export interface Store {
-  createOperator(row: OperatorRow): Promise<OperatorRow>;
-  operatorById(id: string): Promise<OperatorRow | null>;
-  operatorByKeyHash(hash: string): Promise<OperatorRow | null>;
-  touchOperator(id: string, now: number): Promise<void>;
-
-  createPairCode(row: PairCodeRow): Promise<void>;
-  pairCode(userCode: string): Promise<PairCodeRow | null>;
-  claimPairCode(userCode: string, operatorId: string, now: number): Promise<void>;
-  /**
-   * Binds the run to its operator and lifts it out of `pending`.
-   *
-   * Copies the identity down onto the run rather than leaving it to a join:
-   * every row that displays a run reads `runs`, and an operator who pairs a
-   * second agent under a different setup must not retroactively relabel the
-   * runs the first one already banked.
-   */
-  attachOperator(
-    runId: string,
-    operatorId: string,
-    harness: string,
-    config: string | null,
-    now: number,
-  ): Promise<void>;
-
   createRun(row: RunRow): Promise<RunRow>;
   runById(id: string): Promise<RunRow | null>;
   touchRun(id: string, now: number): Promise<void>;
@@ -167,46 +103,24 @@ export interface Store {
  * to loop. Keeping a single list means the two backends cannot drift.
  */
 export const SCHEMA: string[] = [
-  `CREATE TABLE IF NOT EXISTS operators (
-    id         TEXT PRIMARY KEY,
-    key_hash   TEXT NOT NULL UNIQUE,
-    display    TEXT NOT NULL,
-    harness    TEXT NOT NULL,
-    config     TEXT,
-    contact    TEXT,
-    created_at INTEGER NOT NULL,
-    last_at    INTEGER NOT NULL
-  )`,
-
-  `CREATE TABLE IF NOT EXISTS pair_codes (
-    user_code   TEXT PRIMARY KEY,
-    run_id      TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-    created_at  INTEGER NOT NULL,
-    expires_at  INTEGER NOT NULL,
-    claimed_at  INTEGER,
-    operator_id TEXT REFERENCES operators(id) ON DELETE SET NULL
-  )`,
-  `CREATE INDEX IF NOT EXISTS pair_codes_run ON pair_codes(run_id)`,
-
-  // The harness is the benchmarked identity and it arrives from the human at
-  // pairing, never from the agent. There is deliberately no `model` column: a
-  // harness with subagents may drive several, so a single model string is
-  // ill-defined rather than merely unverifiable, and a sortable column of them
-  // would read as a model leaderboard this benchmark cannot honestly produce.
+  // `model` and `provider` are what a leaderboard groups on, and both are
+  // declared by the run at registration. Nothing verifies them and nothing is
+  // planned to: identity is out of scope, and every column that actually ranks
+  // a run — wall clock, probes, solves — is measured server-side instead.
   // `config` is free prose about the setup and is never ranked or aggregated.
   `CREATE TABLE IF NOT EXISTS runs (
     id          TEXT PRIMARY KEY,
     secret      TEXT NOT NULL,
-    harness     TEXT,
+    model       TEXT NOT NULL,
+    provider    TEXT NOT NULL,
     config      TEXT,
-    operator_id TEXT REFERENCES operators(id) ON DELETE SET NULL,
     dialect     TEXT NOT NULL,
     created_at  INTEGER NOT NULL,
     last_at     INTEGER NOT NULL,
     status      TEXT NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS runs_created ON runs(created_at)`,
-  `CREATE INDEX IF NOT EXISTS runs_operator ON runs(operator_id)`,
+  `CREATE INDEX IF NOT EXISTS runs_model ON runs(model, provider)`,
 
   `CREATE TABLE IF NOT EXISTS issues (
     run_id     TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -237,7 +151,6 @@ export const SCHEMA: string[] = [
     wall_ms    INTEGER NOT NULL,
     api_calls  INTEGER NOT NULL,
     probes     INTEGER NOT NULL,
-    events     INTEGER NOT NULL,
     tokens_in  INTEGER,
     tokens_out INTEGER,
     cost_micro INTEGER,
@@ -261,30 +174,9 @@ export const SCHEMA: string[] = [
 /* ------------------------------------------------------------------ */
 
 export const SQL = {
-  createOperator:
-    `INSERT INTO operators (id, key_hash, display, harness, config, contact, created_at, last_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
-  operatorById: "SELECT * FROM operators WHERE id = ?",
-  operatorByKeyHash: "SELECT * FROM operators WHERE key_hash = ?",
-  touchOperator: "UPDATE operators SET last_at = ? WHERE id = ?",
-
-  createPairCode:
-    `INSERT INTO pair_codes (user_code, run_id, created_at, expires_at) VALUES (?, ?, ?, ?)`,
-  pairCode: "SELECT * FROM pair_codes WHERE user_code = ?",
-  // Guarded on `claimed_at IS NULL` so two humans racing the same code cannot
-  // both bind it — the second update matches no row rather than overwriting
-  // the first one's operator.
-  claimPairCode:
-    `UPDATE pair_codes SET claimed_at = ?, operator_id = ?
-     WHERE user_code = ? AND claimed_at IS NULL`,
-  attachOperator:
-    `UPDATE runs SET operator_id = ?, harness = ?, config = ?, status = 'open', last_at = ?
-     WHERE id = ? AND operator_id IS NULL`,
-  reapPairCodes: "DELETE FROM pair_codes WHERE expires_at <= ? AND claimed_at IS NULL",
-
   createRun:
     `INSERT INTO runs
-       (id, secret, harness, config, operator_id, dialect, created_at, last_at, status)
+       (id, secret, model, provider, config, dialect, created_at, last_at, status)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
   runById: "SELECT * FROM runs WHERE id = ?",
   touchRun: "UPDATE runs SET last_at = ? WHERE id = ?",
@@ -293,9 +185,9 @@ export const SQL = {
 
   openIssue: "SELECT * FROM issues WHERE run_id = ? AND closed_at IS NULL",
   issueAt: "SELECT * FROM issues WHERE run_id = ? AND idx = ?",
-  // DO NOTHING rather than a plain insert: two `/api/next` calls racing each
-  // other must not produce two open puzzles, and the loser needs to be able to
-  // read back the issue the winner created rather than see an error.
+  // DO NOTHING rather than a plain insert: two `/next` calls racing each other
+  // must not produce two open puzzles, and the loser needs to be able to read
+  // back the issue the winner created rather than see an error.
   insertIssue:
     `INSERT INTO issues (run_id, idx, puzzle_key, issued_at) VALUES (?, ?, ?, ?)
      ON CONFLICT (run_id, idx) DO NOTHING
@@ -307,10 +199,9 @@ export const SQL = {
   issueDurations:
     "SELECT idx, issued_at, closed_at, outcome FROM issues WHERE run_id = ? ORDER BY idx",
   bumpCalls: "UPDATE issues SET api_calls = api_calls + 1 WHERE run_id = ? AND idx = ?",
-  // A probe is a request that shows the agent how the board reacted: an attest
-  // batch, or a submit that came back unsolved. Counted apart from `api_calls`
-  // because that total also carries fetches which reveal nothing — asking for
-  // the board again tells you only what you were already told.
+  // A probe is a submit that came back unaccepted — a request that showed the
+  // agent how the board reacted. Counted apart from `api_calls` because that
+  // total also carries requests which reveal nothing, like asking for run state.
   bumpProbes: "UPDATE issues SET probes = probes + 1 WHERE run_id = ? AND idx = ?",
   callCount: "SELECT api_calls AS n FROM issues WHERE run_id = ? AND idx = ?",
   probeCount: "SELECT probes AS n FROM issues WHERE run_id = ? AND idx = ?",
@@ -324,26 +215,28 @@ export const SQL = {
   insertRunSolve:
     `INSERT INTO run_solves
        (run_id, idx, puzzle_key, points, bonds, difficulty, wall_ms, api_calls,
-        probes, events, tokens_in, tokens_out, cost_micro, art, share_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        probes, tokens_in, tokens_out, cost_micro, art, share_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (run_id, idx) DO NOTHING
      RETURNING *`,
   runSolves: "SELECT * FROM run_solves WHERE run_id = ? ORDER BY idx",
   solveAt: "SELECT * FROM run_solves WHERE run_id = ? AND idx = ?",
 
   allSolvesForCharts:
-    `SELECT s.run_id, r.harness, r.config, s.idx, s.difficulty, s.points, s.wall_ms,
-            s.bonds, s.api_calls, s.probes, s.events, s.tokens_in, s.tokens_out, s.cost_micro
+    `SELECT s.run_id, r.model, r.provider, r.config, s.idx, s.difficulty, s.points, s.wall_ms,
+            s.bonds, s.api_calls, s.probes, s.tokens_in, s.tokens_out, s.cost_micro
      FROM run_solves s JOIN runs r ON r.id = s.run_id
      ORDER BY s.created_at DESC LIMIT ?`,
 
-  // `r.dialect` rides along so the share page can reveal the laws this player
+  // `r.dialect` rides along so the share page can reveal the laws this run
   // actually fought. It is server-side only — see the note on ArtRow.
   artByShare:
-    `SELECT s.*, r.harness, r.config, r.dialect FROM run_solves s JOIN runs r ON r.id = s.run_id
+    `SELECT s.*, r.model, r.provider, r.config, r.dialect
+     FROM run_solves s JOIN runs r ON r.id = s.run_id
      WHERE s.share_id = ?`,
   recentArt:
-    `SELECT s.*, r.harness, r.config, r.dialect FROM run_solves s JOIN runs r ON r.id = s.run_id
+    `SELECT s.*, r.model, r.provider, r.config, r.dialect
+     FROM run_solves s JOIN runs r ON r.id = s.run_id
      ORDER BY s.created_at DESC LIMIT ?`,
 
   attemptCount: "SELECT n FROM attempts WHERE ip = ? AND until > ?",
@@ -359,21 +252,13 @@ export const SQL = {
   reapAttempts: "DELETE FROM attempts WHERE until <= ?",
 
   // An agent that stops mid-puzzle would otherwise hold its one open issue
-  // forever and never be able to call /api/next again. Abandoning the issue
-  // rather than deleting it keeps the chain's index sequence intact — the next
-  // key still derives from the last *solved* puzzle, so nothing is skipped.
+  // forever and never be able to call /next again. Abandoning the issue rather
+  // than deleting it keeps the chain's index sequence intact — the next key
+  // still derives from the last *solved* puzzle, so nothing is skipped.
   reapIssues:
     `UPDATE issues SET closed_at = ?, outcome = 'abandoned'
      WHERE closed_at IS NULL AND issued_at <= ?`,
-
-  // A run whose human never finished pairing is abandoned onboarding, not a
-  // participant, and it holds a code that should not stay guessable forever.
-  reapPendingRuns:
-    "DELETE FROM runs WHERE status = 'pending' AND created_at <= ?",
 };
-
-/** How long a device code stays claimable before the human has to start over. */
-export const PAIR_CODE_TTL_MS = 15 * 60 * 1000;
 
 /** How long an issue may sit open before the sweep abandons it. */
 export const ISSUE_TTL_MS = 6 * 60 * 60 * 1000;

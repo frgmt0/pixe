@@ -23,9 +23,9 @@ function storeWith(solves: RunSolveRow[]): Store {
 const RUN: RunRow = {
   id: "run0123456789abc",
   secret: "5eba1b1a5eba1b1a5eba1b1a5eba1b1a",
-  harness: "test",
+  model: "test-model",
+  provider: "test-provider",
   config: null,
-  operator_id: "op0123456789abc",
   dialect: "0".repeat(32),
   created_at: 0,
   last_at: 0,
@@ -38,7 +38,7 @@ function solved(idx: number, fill: number): RunSolveRow {
   return {
     id: idx, run_id: RUN.id, idx, puzzle_key: `L${idx + 1}`,
     points: 5, bonds: 0, difficulty: 20,
-    wall_ms: 1000, api_calls: 1, events: 1,
+    wall_ms: 1000, api_calls: 1, probes: 1,
     tokens_in: null, tokens_out: null, cost_micro: null,
     art: encodeGrid(g as unknown as Int8Array), share_id: `s${idx}`, created_at: idx,
   } as RunSolveRow;

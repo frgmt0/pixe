@@ -10,15 +10,22 @@ Then you share the art.
 
 ## As a benchmark
 
-pixe measures combined computer-use and agentic reasoning: an agent has to drive a real
-browser, deduce laws nobody stated, and keep doing it as the boards get harder. The
-prompt is meant to be the whole of the setup —
+pixe measures agentic deduction: an agent has to infer laws nobody stated, from nothing but
+the board's complaints, and keep doing it as the boards get harder.
 
-> Go to https://pixe.frgmt.xyz/ and start solving.
+**It is a pure API benchmark.** Registration, issuing, answering and abandoning are all
+JSON over HTTP. There is no browser in the measured path, no human step, and nothing to
+arrange out of band — one POST naming a model and a provider is the whole of the setup:
 
-— with one exception, which is deliberate: a human has to vouch for the run's harness once,
-through a device code, before it can draw its first puzzle. See `docs/PAIRING.md` for why
-that trade was made, and how an operator key removes the step for every run after the first.
+```bash
+curl -s https://pixe.frgmt.xyz/api/bench/runs \
+  -H 'content-type: application/json' \
+  -d '{"model":"your-model","provider":"your-provider"}'
+```
+
+Protocol 1 was a computer-use benchmark: agents drove a real browser, a human vouched for
+the harness through a device code, and input events were attested. All of it is gone.
+`docs/THREAT-MODEL.md` has the honest accounting of what that bought and what it cost.
 
 The board reads as a benchmark table rather than a scoreboard: time per solve, probes per
 solve, abandon rate, and a projected time to solve all ~1,000,000 puzzles. That figure is
@@ -29,7 +36,7 @@ moment a grid is accepted, so it needs no cooperation from the agent and cannot 
 low. The only way to move it is to solve faster.
 
 Agents start at `/agents.txt`, which is complete enough to play from cold. The full
-specification is `docs/AGENT-PROTOCOL.md`, and `examples/` has a reference solver.
+specification is `docs/AGENT-PROTOCOL.md`.
 
 ## Run it
 
@@ -48,19 +55,16 @@ bun run start      # single Bun process serving the API and dist/ on :3001
 Tests:
 
 ```bash
-bun test           # 198 tests, including a 520-puzzle solvability sweep
+bun test           # 142 tests, including a 520-puzzle solvability sweep
 ```
 
-Env: `PORT` (default 3001), `PIXE_DB` (default `./data/pixe.sqlite`), `NODE_ENV`, and
-`PIXE_PUBLIC_ORIGIN` — the origin a human is sent to for pairing. It defaults to the
-request's own origin, which is right in production and wrong in development, where the
-API answers on :3001 but the page the human needs is Vite's :5173.
+Env: `PORT` (default 3001), `PIXE_DB` (default `./data/pixe.sqlite`), `NODE_ENV`.
 
 Live at **https://pixe.frgmt.xyz**.
 
 ```bash
 bun run deploy     # build + wrangler deploy
-bun run db:schema  # regenerate migrations/0001_init.sql after changing SCHEMA
+bun run db:schema  # regenerate every file in migrations/ after changing SCHEMA
 ```
 
 ## How the game teaches without telling
@@ -220,10 +224,10 @@ leaderboard stops measuring deduction and starts measuring concurrency.
 Two things changed because of it.
 
 **The server no longer ships anything the rules can be derived from** — no seed, no
-scheme, no rule list, no hue set. Feedback comes back from `/api/attest` and `/api/submit`
+scheme, no rule list, no hue set. Feedback comes back from `/api/bench/runs/:id/submit`
 instead, so the two teaching channels still work exactly as before from the player's side;
-only their source moved. Probing is not forbidden, it is priced: every call is counted
-against the issue and every second is on the clock.
+only their source moved. Probing is not forbidden, it is priced: every unaccepted submit is
+counted as a probe against the issue and every second is on the clock.
 
 **Puzzles are chained, which is the part that actually holds.** A run never picks a key.
 The server issues them one at a time and derives the next from the digest of the *accepted*
@@ -251,32 +255,25 @@ real solution.
 
 ### What is honestly not covered
 
-Browser-forcing is deterrence, not proof. Anything a browser computes, a determined script
-can eventually replay; attestation raises the cost and makes the honest path the cheap one,
-and `docs/THREAT-MODEL.md` is explicit about which layers are guarantees and which are
-merely friction. The chained sequence is the only part that is unforgeable.
+The chained sequence is the only part that is unforgeable. Everything else is either a
+measurement the server takes for itself — wall clock, probes, `api_calls`, the re-validated
+solve — or cost imposed on an attacker.
 
-Identity is not verified and is not meant to be. `harness` is the one identity claim in the
-system, and a human vouches for it through the device-code pairing in `docs/PAIRING.md` —
-where they can of course type anything. What that flow really buys is that a person
-deliberately participated, not that the label is true.
-
-A run declares nothing about itself at registration. The `agent` field was the harness
-collected a second time from the less trustworthy party, and `model` is gone for a
-different reason: a harness driving subagents may be running several at once, so one model
-string is ill-defined rather than merely unverifiable, and a sortable column of them would
-read as a model leaderboard this benchmark cannot honestly produce. **pixe does not record
-which model ran and cannot rank models.** What the human types alongside the harness is
-`config` — free prose about the setup, "Opus 5" or "opus planner + haiku subagents" —
-displayed under the harness and never ranked, sorted or aggregated.
+Identity is not verified and is not meant to be. A run names its own `model` and
+`provider` at registration and nothing checks either. That is a real weakening: protocol 1
+at least had a person willing to type the label, and protocol 2 does not. **A pixe table is
+therefore a table of runs that claimed to be a model, not of models.** The measured columns
+are honest about what happened; the label on the row is not evidence of who did it.
+`docs/THREAT-MODEL.md` states this at length rather than burying it.
 
 Tokens and cost are self-reported, optional, and rank nothing. Attempts to verify them do
 not generalise across the provider landscape agents actually use — subscriptions, routers,
 closed products — and a badge that only works for one kind of entrant would correlate with
-harness choice rather than honesty.
+setup rather than honesty.
 
 The line the project holds to, everywhere it displays a number: **time, probe counts and
-solve validity are measured; names and token counts are whatever the run says they are.**
+solve validity are measured; identity and token counts are whatever the run says they
+are.**
 
 ## Architecture
 
@@ -295,22 +292,20 @@ server/     runtime-agnostic API — see "Two runtimes" below
   store.ts      the storage contract, the schema, and every SQL statement
   store-sqlite.ts / store-d1.ts    the two backends
   router.ts     the map of the API — each module claims its own routes
-  runs.ts       run lifecycle, the chained sequence, submission
-  attest.ts     the browser-event envelope and its signed receipts
-  pairing.ts    the device-code flow a human completes
+  runs.ts       the whole agent API: registration, the chained sequence, submit, abandon
+  crypto.ts     the four signing primitives everything else is built on
   bench.ts      benchmark aggregation and the two chart endpoints
   index.ts      Bun entry point
 worker/     Cloudflare Workers entry point
 src/        React 19 + Vite + Tailwind v4
   game/       Board (mutable, diff-based undo), PixelCanvas, palette, toolbar
-  screens/    Bench, Play, ForHumans, SharedArt
-docs/       AGENT-PROTOCOL, THREAT-MODEL, PAIRING, BENCH, WIRING-HARDEN
-examples/   a reference Playwright solver
+  screens/    Bench, Play, SharedArt
+docs/       AGENT-PROTOCOL, THREAT-MODEL, BENCH, LANDING-COPY
 public/     agents.txt — how to play, for machines
 ```
 
 There is no `auth.ts`. There are no accounts, sessions or passwords: a player is a *run*,
-and the only human-facing page in the product is `/for-humans`.
+and the web UI is an ordinary client of the same API an agent uses.
 
 ### Two runtimes, one set of routes
 
@@ -324,16 +319,16 @@ That forces three deliberate choices:
 - **Every store method is async**, including the `bun:sqlite` one, which answers
   immediately and returns an already-resolved promise. D1 cannot be made synchronous,
   so async is the only common denominator.
-- **Every hash and HMAC goes through `crypto.subtle`** — run tokens, attestation
-  receipts, the chained sequence, the stored operator key. Not a preference so much as
-  the only option: the Workers runtime exposes no native crypto to load, so anything
-  outside SubtleCrypto simply is not available on one of the two runtimes.
+- **Every hash and HMAC goes through `crypto.subtle`** — run tokens, the chained sequence,
+  the dialect label. Not a preference so much as the only option: the Workers runtime
+  exposes no native crypto to load, so anything outside SubtleCrypto simply is not
+  available on one of the two runtimes.
 - **The throttles live in the database**, not in a `Map`. On Workers there is no single
   process to hold that map: requests land in whichever isolate is warm, and isolates are
   discarded freely. An in-memory counter there does not throttle, it merely appears to.
-  Run creation, pairing claims and pairing polls each get their own bucket in the same
-  `attempts` table — the device code is short enough for a human to type, so throttling
-  is what stands in for the entropy it does not have.
+  Run creation is the one unauthenticated write, and it gets its own bucket in the
+  `attempts` table. Everything else is bounded per issue instead: 600 requests against an
+  open puzzle, and a probe counter that publishes brute force rather than hiding it.
 
 Banking a solve is idempotent — `INSERT … ON CONFLICT DO NOTHING` plus a select
 fallback. The router checks for an existing solve and then inserts without a
@@ -346,15 +341,14 @@ On Cloudflare, static files come straight off the edge with no Worker invocation
 `run_worker_first: ["/api/*"]` is what keeps the API reachable, since
 `not_found_handling: "single-page-application"` would otherwise answer *everything*
 with `index.html`. Sweeping runs on an hourly cron trigger, there being no long-lived
-process to hold a timer: stale throttle records, expired device codes, runs whose human
-never finished pairing, and issues left open long enough that the agent is plainly gone.
+process to hold a timer: stale throttle records, and issues left open long enough that the
+agent is plainly gone.
 
 **Performance.** The grid is three stacked 64×64 canvases scaled up with
 `image-rendering: pixelated`, not 4096 DOM nodes — every repaint is one 4096-pixel
 `ImageData` write regardless of display size. The board is a plain mutable object outside
-React state; assessment runs once per animation frame rather than per pointer event
-(a full 8-law pass costs ~0.17ms). Undo holds 500 per-stroke diffs, because probing and
-reverting *is* the gameplay here.
+React state. Undo holds 500 per-stroke diffs, because probing and reverting *is* the
+gameplay here.
 
 ## A note on 21st.dev
 

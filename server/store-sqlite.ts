@@ -2,9 +2,9 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import {
-  ISSUE_TTL_MS, PAIR_CODE_TTL_MS, SCHEMA, SQL,
+  ISSUE_TTL_MS, SCHEMA, SQL,
   type ArtRow, type ChartPoint, type IssueRow, type IssueSpan, type NewRunSolve,
-  type OperatorRow, type PairCodeRow, type RunRow, type RunSolveRow, type Store,
+  type RunRow, type RunSolveRow, type Store,
 } from "./store";
 
 /**
@@ -33,25 +33,9 @@ export function sqliteStore(path = process.env.PIXE_DB ?? "./data/pixe.sqlite"):
   };
 
   return {
-    createOperator: async (o) =>
-      (await get<OperatorRow>(
-        SQL.createOperator, o.id, o.key_hash, o.display, o.harness, o.config, o.contact,
-        o.created_at, o.last_at,
-      ))!,
-    operatorById: (id) => get<OperatorRow>(SQL.operatorById, id),
-    operatorByKeyHash: (h) => get<OperatorRow>(SQL.operatorByKeyHash, h),
-    touchOperator: (id, now) => run(SQL.touchOperator, now, id),
-
-    createPairCode: (p) =>
-      run(SQL.createPairCode, p.user_code, p.run_id, p.created_at, p.expires_at),
-    pairCode: (code) => get<PairCodeRow>(SQL.pairCode, code),
-    claimPairCode: (code, op, now) => run(SQL.claimPairCode, now, op, code),
-    attachOperator: (runId, op, harness, config, now) =>
-      run(SQL.attachOperator, op, harness, config, now, runId),
-
     createRun: async (r) =>
       (await get<RunRow>(
-        SQL.createRun, r.id, r.secret, r.harness, r.config, r.operator_id, r.dialect,
+        SQL.createRun, r.id, r.secret, r.model, r.provider, r.config, r.dialect,
         r.created_at, r.last_at, r.status,
       ))!,
     runById: (id) => get<RunRow>(SQL.runById, id),
@@ -61,8 +45,8 @@ export function sqliteStore(path = process.env.PIXE_DB ?? "./data/pixe.sqlite"):
 
     openIssue: (rid) => get<IssueRow>(SQL.openIssue, rid),
     issueAt: (rid, idx) => get<IssueRow>(SQL.issueAt, rid, idx),
-    // No row back means a concurrent /api/next already opened this index, so
-    // the row that is already there is the answer. See SQL.insertIssue.
+    // No row back means a concurrent /next already opened this index, so the
+    // row that is already there is the answer. See SQL.insertIssue.
     insertIssue: async (rid, idx, key, now) =>
       (await get<IssueRow>(SQL.insertIssue, rid, idx, key, now)) ??
       (await get<IssueRow>(SQL.issueAt, rid, idx))!,
@@ -77,7 +61,7 @@ export function sqliteStore(path = process.env.PIXE_DB ?? "./data/pixe.sqlite"):
     insertRunSolve: async (s: NewRunSolve) =>
       (await get<RunSolveRow>(
         SQL.insertRunSolve, s.run_id, s.idx, s.puzzle_key, s.points, s.bonds, s.difficulty,
-        s.wall_ms, s.api_calls, s.probes, s.events, s.tokens_in, s.tokens_out, s.cost_micro,
+        s.wall_ms, s.api_calls, s.probes, s.tokens_in, s.tokens_out, s.cost_micro,
         s.art, s.share_id, s.created_at,
       )) ?? (await get<RunSolveRow>(SQL.solveAt, s.run_id, s.idx))!,
     runSolves: (rid) => all<RunSolveRow>(SQL.runSolves, rid),
@@ -96,8 +80,6 @@ export function sqliteStore(path = process.env.PIXE_DB ?? "./data/pixe.sqlite"):
     reap: async (now) => {
       await run(SQL.reapAttempts, now);
       await run(SQL.reapIssues, now, now - ISSUE_TTL_MS);
-      await run(SQL.reapPairCodes, now);
-      await run(SQL.reapPendingRuns, now - PAIR_CODE_TTL_MS);
     },
   };
 }

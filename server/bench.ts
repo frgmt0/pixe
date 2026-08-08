@@ -150,7 +150,8 @@ export function summariseFromPoints(
 
   return {
     run_id: run.id,
-    harness: run.harness,
+    model: run.model,
+    provider: run.provider,
     config: run.config,
     status: run.status,
 

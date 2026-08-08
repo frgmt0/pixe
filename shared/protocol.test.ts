@@ -1,19 +1,21 @@
 import { describe, expect, test } from "bun:test";
 import { encodeGrid } from "./codec";
-import { CELLS } from "./palette";
+import { CELLS, EMPTY, GRID } from "./palette";
 import { emptyGrid } from "./rules";
 import {
-  MAX_ATTEST_PAYLOAD,
+  BLANK_CHAR,
   MAX_LABEL,
   PUZZLE_UNIVERSE,
   RUN_COOKIE,
   chartPointOf,
   clearRunCookie,
+  feedbackFrom,
+  gridRows,
   isRunId,
   label,
   median,
   meterToRow,
-  parseAttestEnvelope,
+  parseGrid,
   parseRegisterRun,
   parseSubmit,
   percentile,
@@ -46,14 +48,15 @@ const HOSTILE: unknown[] = [
   [],
   [1, 2, 3],
   new Date(),
-  { __proto__: { agent: "sneaky" } },
+  { __proto__: { model: "sneaky" } },
 ];
 
+const OK = { model: "claude-opus-5", provider: "anthropic" };
+
 describe("run identifiers", () => {
-  test("accepts only 16 url-safe characters", () => {
+  test("accepts only url-safe identifiers of a plausible length", () => {
     expect(isRunId("aB3-_xyz09QWERTy")).toBe(true);
     expect(isRunId("short")).toBe(false);
-    expect(isRunId("seventeen_chars__")).toBe(false);
     expect(isRunId("has spaces here!")).toBe(false);
     expect(isRunId("../../etc/passwd")).toBe(false);
     for (const v of HOSTILE) expect(isRunId(v)).toBe(false);
@@ -61,11 +64,18 @@ describe("run identifiers", () => {
 });
 
 describe("run token extraction", () => {
-  const withHeaders = (h: Record<string, string>) => new Request("https://pixe.test/api/board", { headers: h });
+  const withHeaders = (h: Record<string, string>) =>
+    new Request("https://pixe.test/api/bench/runs/abc/next", { headers: h });
 
   test("reads a bearer token", () => {
     expect(runTokenFrom(withHeaders({ authorization: "Bearer abcdefghijklmnop" })))
       .toBe("abcdefghijklmnop");
+  });
+
+  test("reads a real run token, dots and all", () => {
+    const tok = "r1.aBcDeFgHiJkL.9x8y7z6w5v4u3t2s1r0q";
+    expect(runTokenFrom(withHeaders({ authorization: `Bearer ${tok}` }))).toBe(tok);
+    expect(runTokenFrom(withHeaders({ cookie: `${RUN_COOKIE}=${tok}` }))).toBe(tok);
   });
 
   test("reads the cookie", () => {
@@ -104,46 +114,53 @@ describe("run cookie", () => {
 });
 
 describe("parseRegisterRun", () => {
-  test("registration declares nothing, so an empty body is the whole body", () => {
-    const r = parseRegisterRun({});
+  test("takes the declared identity and nothing else", () => {
+    const r = parseRegisterRun({ ...OK, config: "8 parallel painters", secret: "ignored" });
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.value).toEqual({});
-  });
-
-  // `agent` and `model` were removed rather than deprecated. A solver written
-  // against the older spec still registers; its labels are simply not read.
-  test("ignores the identity fields the protocol used to carry", () => {
-    expect(parseRegisterRun({ agent: "claude-code", model: "claude-opus-5" }).ok).toBe(true);
-  });
-
-  // A harness in the body is ignored rather than refused — see the note on
-  // `parseRegisterRun` — but it must never survive the parse, because the value
-  // that survives is the one that could reach a row.
-  test("carries no harness through, whatever the body says", () => {
-    for (const harness of ["playwright", "Claude Code", " x ", undefined, null, ""]) {
-      const r = parseRegisterRun({ harness });
-      expect(r.ok).toBe(true);
-      if (r.ok) expect(r.value).toEqual({});
+    if (r.ok) {
+      expect(r.value).toEqual({
+        model: "claude-opus-5",
+        provider: "anthropic",
+        config: "8 parallel painters",
+      });
     }
   });
 
+  // Both are required rather than optional: a leaderboard grouped on a column
+  // that is usually null is not a leaderboard.
+  test("refuses a run that will not name a model and a provider", () => {
+    expect(parseRegisterRun({ provider: "anthropic" }).ok).toBe(false);
+    expect(parseRegisterRun({ model: "claude-opus-5" }).ok).toBe(false);
+    expect(parseRegisterRun({ model: "  ", provider: "anthropic" }).ok).toBe(false);
+    expect(parseRegisterRun({ model: 7, provider: "anthropic" }).ok).toBe(false);
+    expect(parseRegisterRun({ ...OK, model: "a".repeat(MAX_LABEL + 1) }).ok).toBe(false);
+  });
+
+  test("config is optional and an absent one is null, not an empty string", () => {
+    for (const config of [undefined, null, ""]) {
+      const r = parseRegisterRun({ ...OK, config });
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.value.config).toBe(null);
+    }
+    expect(parseRegisterRun({ ...OK, config: "a".repeat(MAX_LABEL + 1) }).ok).toBe(false);
+  });
+
+  // These land straight in a public table, so they are flattened for rendering.
+  // Not for truth: nothing here checks that a model is the model it says.
+  test("flattens what will be rendered", () => {
+    const r = parseRegisterRun({ model: "claude​ opus\n5", provider: "  anthropic  " });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toEqual({ model: "claude opus 5", provider: "anthropic", config: null });
+  });
+
   test("rejects every body that is not a JSON object", () => {
-    // Two entries in HOSTILE are objects, and an object body is now valid
-    // however it is furnished: there is nothing in it to read.
-    const isObjectBody = (v: unknown) =>
-      typeof v === "object" && v !== null && !Array.isArray(v);
-    for (const v of HOSTILE) expect(parseRegisterRun(v).ok).toBe(isObjectBody(v));
+    for (const v of HOSTILE) expect(parseRegisterRun(v).ok).toBe(false);
   });
 });
 
-/*
- * The harness and config a human types land straight in the public benchmark
- * table, so the sanitiser is tested where it now lives rather than through a
- * registration body that no longer carries either.
- */
 describe("label", () => {
   test("flattens control characters and collapses whitespace", () => {
-    expect(label("ev il\n\nagent\u200b")).toBe("ev il agent");
+    expect(label("ev il\n\nagent​")).toBe("ev il agent");
     expect(label("  m\tm  ")).toBe("m m");
   });
 
@@ -163,42 +180,105 @@ describe("label", () => {
   });
 });
 
+/*
+ * Three shapes, one grid. Every runner author would otherwise write the same
+ * encoder and get it subtly wrong, and a `bad_grid` on a correct answer is the
+ * worst possible first impression of a benchmark.
+ */
+describe("parseGrid", () => {
+  const rows = (fill: string) => Array.from({ length: GRID }, () => fill.repeat(GRID));
+
+  test("reads 64 rows of characters", () => {
+    const g = parseGrid(rows("a"));
+    expect(g).not.toBe(null);
+    expect(g!.length).toBe(CELLS);
+    expect([...g!].every((v) => v === 0)).toBe(true);
+  });
+
+  test("reads 64 rows of integers", () => {
+    const g = parseGrid(Array.from({ length: GRID }, () => Array.from({ length: GRID }, () => 3)));
+    expect(g).not.toBe(null);
+    expect([...g!].every((v) => v === 3)).toBe(true);
+  });
+
+  test("reads the run-length string", () => {
+    const g = parseGrid(FULL_GRID);
+    expect(g).not.toBe(null);
+    expect([...g!].every((v) => v === 0)).toBe(true);
+  });
+
+  test("blanks survive as blanks in every shape", () => {
+    const charRow = BLANK_CHAR + "a".repeat(GRID - 1);
+    const chars = parseGrid([charRow, ...rows("a").slice(1)])!;
+    expect(chars[0]).toBe(EMPTY);
+    expect(chars[1]).toBe(0);
+
+    const nums = Array.from({ length: GRID }, () => Array.from({ length: GRID }, () => 0));
+    nums[0]![0] = -1;
+    nums[0]![1] = null as unknown as number;
+    const parsed = parseGrid(nums)!;
+    expect(parsed[0]).toBe(EMPTY);
+    expect(parsed[1]).toBe(EMPTY);
+    expect(parsed[2]).toBe(0);
+  });
+
+  test("all three shapes agree cell for cell", () => {
+    const g = emptyGrid();
+    for (let i = 0; i < CELLS; i++) g[i] = i % 9 === 8 ? EMPTY : i % 8;
+    const asRows = gridRows(g);
+    const asNums = asRows.map((row) => [...row].map((c) => (c === BLANK_CHAR ? -1 : c.charCodeAt(0) - 97)));
+    expect([...parseGrid(asRows)!]).toEqual([...g]);
+    expect([...parseGrid(asNums)!]).toEqual([...g]);
+    expect([...parseGrid(encodeGrid(g))!]).toEqual([...g]);
+  });
+
+  test("rejects the wrong shape rather than padding it", () => {
+    expect(parseGrid(rows("a").slice(1))).toBe(null);
+    expect(parseGrid([...rows("a"), "a".repeat(GRID)])).toBe(null);
+    expect(parseGrid(rows("a").map((r) => r.slice(1)))).toBe(null);
+    expect(parseGrid(rows("z"))).toBe(null);
+    expect(parseGrid(rows("A"))).toBe(null);
+    expect(parseGrid(Array.from({ length: GRID }, () => Array.from({ length: GRID }, () => 8)))).toBe(null);
+    expect(parseGrid(Array.from({ length: GRID }, () => Array.from({ length: GRID }, () => 1.5)))).toBe(null);
+    for (const v of HOSTILE) expect(parseGrid(v)).toBe(null);
+  });
+});
+
 describe("parseSubmit", () => {
   test("accepts a well-formed grid and hands back the decoded board", () => {
-    const r = parseSubmit({ art: FULL_GRID });
+    const r = parseSubmit({ grid: FULL_GRID });
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.value.grid.length).toBe(CELLS);
       expect(r.value.meter).toBe(null);
-      expect(r.value.attest).toBe(null);
     }
   });
 
   test("rejects anything the codec cannot read", () => {
-    for (const art of ["", "zzz", "a", "a0", "a-1", "aZZZZZZZZZ", "a1", "%00", "a".repeat(50_000)]) {
-      const r = parseSubmit({ art });
+    for (const grid of ["", "zzz", "a", "a0", "a-1", "aZZZZZZZZZ", "a1", "%00", "a".repeat(50_000)]) {
+      const r = parseSubmit({ grid });
       expect(r.ok).toBe(false);
       if (!r.ok) expect(r.code).toBe("bad_grid");
     }
     for (const v of HOSTILE) expect(parseSubmit(v).ok).toBe(false);
-    expect(parseSubmit({ art: 12345 }).ok).toBe(false);
-    expect(parseSubmit({ art: { toString: () => FULL_GRID } }).ok).toBe(false);
+    expect(parseSubmit({ grid: 12345 }).ok).toBe(false);
+    expect(parseSubmit({ grid: { toString: () => FULL_GRID } }).ok).toBe(false);
   });
 
   test("takes a self-reported meter", () => {
-    const r = parseSubmit({ art: FULL_GRID, meter: { tokensIn: 100, tokensOut: 20, costMicro: 4500 } });
+    const r = parseSubmit({ grid: FULL_GRID, meter: { tokensIn: 100, tokensOut: 20, costMicro: 4500 } });
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value.meter).toEqual({ tokensIn: 100, tokensOut: 20, costMicro: 4500 });
   });
 
   test("a partially reported meter keeps its holes", () => {
-    const r = parseSubmit({ art: FULL_GRID, meter: { tokensIn: 100 } });
+    const r = parseSubmit({ grid: FULL_GRID, meter: { tokensIn: 100 } });
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value.meter).toEqual({ tokensIn: 100, tokensOut: null, costMicro: null });
   });
 
   test("an entirely empty meter is the same as no meter", () => {
-    const r = parseSubmit({ art: FULL_GRID, meter: {} });
+    const r = parseSubmit({ grid: FULL_GRID, meter: {} });
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value.meter).toBe(null);
   });
@@ -207,11 +287,11 @@ describe("parseSubmit", () => {
     // `[]` is in here deliberately: Number([]) is 0, so a validator that
     // coerced before type-checking would bank an empty array as a reported zero.
     for (const tokensIn of [-1, 1.5, NaN, Infinity, -Infinity, 1e309, "100", [], {}, 1e13]) {
-      expect(parseSubmit({ art: FULL_GRID, meter: { tokensIn } }).ok).toBe(false);
+      expect(parseSubmit({ grid: FULL_GRID, meter: { tokensIn } }).ok).toBe(false);
     }
-    expect(parseSubmit({ art: FULL_GRID, meter: { costMicro: -1 } }).ok).toBe(false);
-    expect(parseSubmit({ art: FULL_GRID, meter: "lots" }).ok).toBe(false);
-    expect(parseSubmit({ art: FULL_GRID, meter: [] }).ok).toBe(false);
+    expect(parseSubmit({ grid: FULL_GRID, meter: { costMicro: -1 } }).ok).toBe(false);
+    expect(parseSubmit({ grid: FULL_GRID, meter: "lots" }).ok).toBe(false);
+    expect(parseSubmit({ grid: FULL_GRID, meter: [] }).ok).toBe(false);
   });
 
   // Reporting is optional, so declining to report has to be a legal submit
@@ -219,7 +299,7 @@ describe("parseSubmit", () => {
   // one", which is different from a run saying zero.
   test("an explicit null is unreported, not malformed", () => {
     const r = parseSubmit({
-      art: FULL_GRID,
+      grid: FULL_GRID,
       meter: { tokensIn: null, tokensOut: 40, costMicro: null },
     });
     expect(r.ok).toBe(true);
@@ -227,58 +307,48 @@ describe("parseSubmit", () => {
   });
 
   test("a reported zero survives as zero, not as unreported", () => {
-    const r = parseSubmit({ art: FULL_GRID, meter: { tokensIn: 0, tokensOut: 0, costMicro: 0 } });
+    const r = parseSubmit({ grid: FULL_GRID, meter: { tokensIn: 0, tokensOut: 0, costMicro: 0 } });
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value.meter).toEqual({ tokensIn: 0, tokensOut: 0, costMicro: 0 });
   });
 });
 
-describe("attestation envelope", () => {
-  const good = { v: 1, idx: 3, payload: "opaque-to-this-module" };
-
-  test("checks the envelope and nothing about the payload", () => {
-    const r = parseAttestEnvelope(good);
-    expect(r.ok).toBe(true);
-    if (r.ok) expect(r.value.payload).toBe(good.payload);
+/*
+ * The two channels are the entire teaching mechanism, and the wire form is the
+ * contract a solver reads: coordinates, and colour names. Neither ever carries
+ * a law, a threshold or a direction.
+ */
+describe("feedback", () => {
+  test("cell indices become row-major coordinates", () => {
+    const f = feedbackFrom([0, 65, CELLS - 1], []);
+    expect(f.flashes).toEqual([
+      { x: 0, y: 0 },
+      { x: 1, y: 1 },
+      { x: GRID - 1, y: GRID - 1 },
+    ]);
+    expect(f.buzzes).toEqual([]);
   });
 
-  test("rejects malformed envelopes with an attestation code", () => {
-    const bad: unknown[] = [
-      ...HOSTILE,
-      { v: 0, idx: 0, payload: "x" },
-      { v: 1.5, idx: 0, payload: "x" },
-      { v: 1, idx: -1, payload: "x" },
-      { v: 1, idx: 0 },
-      { v: 1, idx: 0, payload: "" },
-      { v: 1, idx: 0, payload: 42 },
-      { v: 1, idx: 0, payload: "x".repeat(MAX_ATTEST_PAYLOAD + 1) },
-    ];
-    for (const v of bad) {
-      const r = parseAttestEnvelope(v);
-      expect(r.ok).toBe(false);
-      if (!r.ok) expect(r.code).toBe("attestation_invalid");
-    }
+  test("hue ids become the names on the palette", () => {
+    expect(feedbackFrom([], [4, 0]).buzzes).toEqual(["Tomato", "Mint"]);
   });
 
-  test("rides along on a submit", () => {
-    const r = parseSubmit({ art: FULL_GRID, attest: good });
-    expect(r.ok).toBe(true);
-    if (r.ok) expect(r.value.attest).toEqual(good);
+  test("reading order, so two responses for one board compare equal", () => {
+    const f = feedbackFrom([200, 1, 64], []);
+    expect(f.flashes).toEqual([
+      { x: 1, y: 0 },
+      { x: 0, y: 1 },
+      { x: 8, y: 3 },
+    ]);
   });
 
-  test("a broken envelope fails the whole submit", () => {
-    const r = parseSubmit({ art: FULL_GRID, attest: { v: 1 } });
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.code).toBe("attestation_invalid");
+  test("a clean board says nothing at all", () => {
+    expect(feedbackFrom([], [])).toEqual({ flashes: [], buzzes: [] });
   });
 });
 
 describe("the chained sequence", () => {
   // The key derivation itself is server-side and tested in `server/runs.test.ts`.
-  // It was briefly asserted here against a `chainLabel` helper that no server
-  // code called — including a test insisting an abandoned rung re-rolls in
-  // place, which is not what the server does. A test can only be as correct as
-  // the thing it is pointed at.
 
   // The codec accepts non-canonical encodings, so digesting the client's own
   // string would let a solver re-encode an accepted grid until it liked the
@@ -287,11 +357,11 @@ describe("the chained sequence", () => {
     const g = emptyGrid();
     g.fill(0);
     const canonical = await solutionDigest(g);
-    const reparsed = parseSubmit({ art: "a1".repeat(0) + encodeGrid(g) });
+    const reparsed = parseSubmit({ grid: encodeGrid(g) });
     expect(reparsed.ok).toBe(true);
     if (reparsed.ok) expect(await solutionDigest(reparsed.value.grid)).toBe(canonical);
 
-    const padded = parseSubmit({ art: `a1a${(CELLS - 1).toString(36).toUpperCase()}` });
+    const padded = parseSubmit({ grid: `a1a${(CELLS - 1).toString(36).toUpperCase()}` });
     expect(padded.ok).toBe(true);
     if (padded.ok) expect(await solutionDigest(padded.value.grid)).toBe(canonical);
   });
@@ -335,9 +405,9 @@ describe("metrics", () => {
 const RUN: RunRow = {
   id: "run0123456789abc",
   secret: "never-leaves-the-db",
-  harness: "Claude Code",
-  config: "opus planner + haiku subagents",
-  operator_id: "op0123456789abc",
+  model: "claude-opus-5",
+  provider: "anthropic",
+  config: "8 parallel painters",
   dialect: "salt",
   created_at: 1_000,
   last_at: 9_000,
@@ -356,7 +426,6 @@ function solve(over: Partial<RunSolveRow>): RunSolveRow {
     difficulty: 31,
     wall_ms: 1_000,
     api_calls: 6,
-    events: 400,
     tokens_in: 1_000,
     tokens_out: 200,
     cost_micro: 5_000,
@@ -366,16 +435,6 @@ function solve(over: Partial<RunSolveRow>): RunSolveRow {
     ...over,
   };
 }
-
-/*
- * `summarizeRun` and the ranking used to be tested here. Both moved to
- * `server/bench.ts` when the headline metric became effective time per solve,
- * which has to charge a run for the boards it abandoned — and an abandoned
- * board leaves no solve row to read, so the figure cannot be computed from
- * `run_solves` alone. `server/bench.test.ts` covers them now, including the
- * property that matters most: a run with the better median but a pile of
- * dropped boards ranks behind one that ground through everything.
- */
 
 describe("row mapping", () => {
   test("meterToRow keeps unreported as null", () => {
@@ -387,8 +446,9 @@ describe("row mapping", () => {
   test("chartPointOf carries the self-reported nulls through untouched", () => {
     const p = chartPointOf(solve({ cost_micro: null }), RUN);
     expect(p.cost_micro).toBe(null);
-    expect(p.harness).toBe("Claude Code");
-    expect(p.config).toBe("opus planner + haiku subagents");
+    expect(p.model).toBe("claude-opus-5");
+    expect(p.provider).toBe("anthropic");
+    expect(p.config).toBe("8 parallel painters");
     expect(p.wall_ms).toBe(1_000);
   });
 });

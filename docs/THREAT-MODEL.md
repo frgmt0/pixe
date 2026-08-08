@@ -3,7 +3,18 @@
 This document exists because the last version of the anti-cheat section was
 honest about its trade-off and still got beaten. It is written to be useful
 after an attack, not reassuring before one. Where a layer is deterrence rather
-than proof, it says so in those words.
+than proof, it says so in those words. Where there is no layer at all any more,
+it says that too.
+
+## What pixe is now
+
+A pure API benchmark. An agent registers over JSON, is issued one puzzle at a
+time over JSON, and answers over JSON. There is no browser in the measured path,
+no human vouching for a run, and no attestation of anything.
+
+That is a deliberate weakening of the previous trust model, and this document is
+where the bill comes due. Read §"What was removed and what it cost" before
+quoting any number from a pixe table as evidence about a named model.
 
 ## The incident
 
@@ -27,7 +38,8 @@ Two independent failures, and it matters that they are independent:
 - **Concurrency.** Nothing forced puzzle `n` to precede puzzle `n+1`.
 
 Fixing only the first is a losing game — obfuscation always is. Fixing the
-second is arithmetic.
+second is arithmetic. Both fixes survive the move to a pure API benchmark
+unchanged, which is why that move was affordable at all.
 
 ## What is genuinely unforgeable
 
@@ -59,7 +71,8 @@ expressed.** A thousand puzzles requires a thousand accepted solutions in
 sequence, which is the same thing as solving a thousand puzzles.
 
 This is the load-bearing guarantee. If every other layer below were removed
-tomorrow, the benchmark would still measure serial solving.
+tomorrow, the benchmark would still measure serial solving. Most of them have
+been.
 
 ### What it does not do
 
@@ -67,6 +80,26 @@ It does not make any individual solve harder, slower, or more honest. A solver
 that beats a board in 400ms of pure computation still beats it in 400ms. The
 chain constrains *throughput*, not *method* — and constraining method is not a
 goal. Writing a custom solver is the skill being measured.
+
+## What is measured rather than claimed
+
+Everything that ranks a run is computed on the server from things the server
+watched happen:
+
+- **Wall clock.** `issues.issued_at` to the moment a grid passed the validator.
+  It cannot be reported low because it is never reported at all.
+- **Probes.** Submits that came back unaccepted, counted in the `issues` row.
+  An agent cannot look at the board without the counter moving, because looking
+  at the board *is* submitting to it.
+- **`api_calls`.** Every request against an open issue.
+- **Abandonment.** Duration and outcome per issue, so `effective_ms_per_solve`
+  can charge a run for the boards it dropped.
+- **The solve itself.** Re-derived from the run's dialect and re-validated with
+  the same shared engine every other caller runs. A client is trusted with
+  pixels and with nothing else.
+
+These are the columns a leaderboard should rank on, and they are the only ones
+that survive an adversarial reading.
 
 ## What is deterrence, priced in effort
 
@@ -93,147 +126,60 @@ rather than absent: each phase seed is a function of `(salt, key, tag)`, so
 recovering one board's stream yields neither the salt nor anything about the
 next board. It is not, and should not be described as, a cryptographic secret.
 
-### Browser-event attestation
-
-`server/attest.ts` requires a signed envelope of typed interaction events —
-strokes with cell counts and durations, tool picks, undos, visibility changes, a
-submit intent — before a grid can be banked. The gate is 8 strokes, 24 events, a
-3-second span, one submit intent, and a tally no older than two minutes.
-
-Two honest notes on that gate. First, it is tuned to sit *below* any plausible
-honest session rather than above an implausible forged one: a gate that rejects
-real play breaks the benchmark, while one a script can clear merely fails to
-improve it. Second, `MIN_SPAN_MS` is deliberately only 3 seconds, because wall
-clock is the headline metric and a meaningful floor here would be a floor on the
-number being measured.
-
-Those counts are the weak half and always were. Two things carry weight.
-
-#### The receipt chain — serialisation
-
-There is no table for per-issue counters, so the running tally lives in an
-HMAC-signed receipt the client carries. Each batch presents the previous receipt
-and receives a new one with the tally advanced. Consequences:
-
-- Forging a higher tally requires the run secret.
-- Replaying an old receipt only *rewinds* you, which never helps.
-- A thousand concurrent batches all chained from receipt zero produce a thousand
-  tallies of one. There is no operation that merges them. A tally of a thousand
-  costs a thousand sequential round trips.
-
-That is real serialisation, obtained the same way the puzzle chain gets it.
-
-#### The write ledger — the envelope has to contain the answer
-
-Every attested event carries the exact cells it wrote and what it wrote there.
-The receipt carries the canvas those writes have built up so far — the whole
-grid, run-length encoded, not a digest of it, because the server has to be able
-to *apply* the next batch to something and a Worker isolate has nowhere else to
-keep it. Each batch is then checked by **replaying** it: the writes applied to
-the receipt's canvas must produce, cell for cell, the grid the client is asking
-feedback on. At submit, the grid being banked must equal that same replayed
-canvas.
-
-Both halves matter, and for different reasons.
-
-The attest-time half means the feedback oracle is no longer free. Feedback is
-the entire teaching mechanism — it is the thing every solver must call
-constantly — and you cannot now ask about a board you did not paint. A probe is
-an act of painting or it is a 409.
-
-The submit-time half means the envelope has to *contain the answer*. Before
-this, an envelope was content-free ceremony: emit eight plausible strokes about
-nothing in particular, then post a grid computed by other means. Now the strokes
-and the grid are the same object, checked by arithmetic.
-
-What that buys, stated as narrowly as it deserves: **a submission must be
-accompanied by a stroke history that genuinely produces it.** Nothing more.
-
-What it does not buy: **it is no evidence whatsoever about who or what moved the
-pointer.** A script that decomposes its solution into legal painting operations
-and posts them in order satisfies every check in the file. `attest.test.ts` has
-a test that does exactly that and asserts it passes, so the residual cannot be
-quietly forgotten. What the ledger costs such a script is that the
-decomposition, the ordering, the intermediate canvases and the serial round
-trips all become mandatory — which is very nearly the cost of driving the page,
-and driving the page produces all of it for free. That is the entire claim.
-
-#### No plausibility heuristics, on purpose
-
-An earlier version of this file rejected four identically-spaced events in a
-row, on the theory that a hand on a mouse does not do that. **That check is
-gone, and nothing like it is coming back.**
-
-The intended players drive the site with Playwright or Puppeteer, headless
-included. `page.mouse.move()` produces perfectly uniform inter-event timing,
-integer coordinates, linear interpolation and no jitter — every "does this look
-like a real hand?" signal fires *hardest* on precisely the clients this
-benchmark exists for. A check that penalises them is strictly worse than no
-check: it does not merely fail to catch a forger, it makes the benchmark
-unusable for its actual audience, and it does so silently until somebody
-complains. Looking human is not the property this system wants, so it does not
-measure it. The replacement measures arithmetic instead: either the strokes on
-record paint the grid or they do not, and a laggy VM, a 30Hz display, a
-touchscreen and a headless Chromium all answer that question identically.
-
-#### Residuals in this layer, specifically
-
-- **A forged stroke history is still a valid stroke history.** Priced above.
-- **A reload starts a fresh ledger.** `GET /api/board` hands out a receipt over
-  a blank canvas, so a restored local draft arrives as one bulk write in the
-  next event. That is the honest account — those cells really were unattested —
-  but it does mean the ledger proves "these strokes paint this grid", never
-  "this grid took this long to paint".
-- **The submit-side grid rides in the receipt string.** `POST /api/submit` hands
-  attestation nothing but the receipt, so the client appends the canvas it is
-  spending it on: `<receipt>!<grid>`. `bindReceipt` is the shape this wants;
-  the suffix goes away when `runs.ts` can pass the decoded grid instead.
-- **Nothing surfaces on the board yet.** The tally now carries `writes` and
-  `filled` alongside the event counts. Neither has a column.
-
 ### Withholding the rules from the client
 
-`GET /api/board` returns the chain index, the key, the title, the point value,
-the grid size, and an attestation receipt. It does not return the seed, the zone
-scheme, the rules, or `hueSet`. Feedback is computed server-side and returned as
-a run-length-encoded 4096-cell mask plus a list of implicated hues.
-`RuleEval.progress` is deliberately not forwarded, because its `need` field is
-the literal numeric threshold of a counting law.
+`POST /api/bench/runs/:id/next` returns the chain index, the key, the title, the
+point value, the grid dimensions and the palette. It does not return the seed,
+the dialect salt, the zone scheme, the rules, or `hueSet`. Feedback is computed
+server-side and returned as flashing coordinates plus the names of implicated
+hues. `RuleEval.progress` is deliberately not forwarded, because its `need`
+field is the literal numeric threshold of a counting law.
+
+Feedback is also filtered to `broken` verdicts only. A `pending` rule — one that
+is unsatisfied but still reachable — says nothing while blanks remain. That is
+the silence rule the protocol documents, and it is enforced in
+`server/runs.ts:feedbackFor` rather than promised in prose. It is not a security
+property; it is the difference between a benchmark that teaches and one that
+nags.
 
 What this costs an attacker: the laws are no longer computable offline. The only
 way to learn them is to probe the board and read the reactions — which is the
 game.
 
-What it does not do: **whatever the browser can see, a scripted HTTP client can
-also decode.** The feedback response is a plain JSON oracle and any client can
-call it. Withholding the rules converts an offline computation into an online,
-rate-limited, serial interrogation. It does not make the rules secret.
+What it does not do: **whatever the server will tell anyone, it will tell a
+script.** The feedback response is a plain JSON oracle by design. Withholding
+the rules converts an offline computation into an online, counted, serial
+interrogation. It does not make the rules secret.
 
 ### Budgets
 
 | Limit | Value | What it is for |
 | --- | --- | --- |
-| Runs per IP | 20 / hour | Run creation is unauthenticated |
-| Round trips per issue | 600 | The feedback oracle is not a brute-force channel |
-| Abandon cooldown | 60s | Rerolling a puzzle must cost more than solving it |
+| Runs per IP | 60 / hour | Run creation is unauthenticated |
+| Requests per open issue | 600 | The feedback oracle is not a brute-force channel |
+| Abandon cooldown | 60 s | Dropping a puzzle must cost more than solving it |
+| Issue TTL | 6 h | A crashed run must not hold a board forever |
+| Request body | 256 KB | A 64-row JSON grid is ~8 KB |
 
-600 round trips is generous for play and far too few to walk a solver to the law
-set one cell at a time. The budget exists to bound brute force, not deduction —
-deduction through feedback *is* the game.
+600 round trips is generous for deduction and far too few to walk a solver to
+the law set one cell at a time. The budget exists to bound brute force, not
+deduction — deduction through feedback *is* the game. The real deterrent is that
+every probe is counted and published, so brute force does not go undetected, it
+goes on the record as a bad probe count.
 
 ## Wall-clock integrity
 
 Wall clock per solve, measured server-side from `issues.issued_at` to
-acceptance, is the headline metric and the default ranking. It cannot be moved
-downward by lying, so the question is whether it can be moved downward by
-working on a puzzle before its clock starts. Every path:
+acceptance, is the spine of the benchmark. It cannot be moved downward by lying,
+so the question is whether it can be moved downward by working on a puzzle
+before its clock starts. Every path:
 
-1. **`POST /api/next`** writes the issue row — and therefore `issued_at` — and
+1. **`POST .../next`** writes the issue row — and therefore `issued_at` — and
    *then* derives the board. Content is disclosed strictly after the timestamp,
    and the ~30ms of derivation is charged to the agent, which is the
    conservative direction.
-2. **`GET /api/board`** serves only the row returned by `openIssue`. There is no
-   parameter for a future index.
+2. **`GET .../runs/:id`** serves only the row returned by `openIssue`. There is
+   no parameter for a future index, and no route that names a puzzle at all.
 3. **Computing `key(n+1)` early** requires the run secret and the digest of an
    accepted grid. Neither exists before the submit for `n` completes.
 4. **Pre-solving the candidate band.** The difficulty band is public and narrow
@@ -250,13 +196,60 @@ No path found. This is the claim most worth re-checking whenever a route is
 added: any endpoint that answers a question about a puzzle other than the open
 one reopens it.
 
+## What was removed, and what it cost
+
+Three layers existed in protocol 1 and none of them exist now. This section is
+the honest accounting, written so that nobody has to reconstruct it from a git
+log.
+
+**Device-code pairing** (`server/pairing.ts`, `operators`, `pair_codes`). A
+human typed a code into a web page and named the harness the agent was running
+under. It bought one weak claim: that *some person* was willing to say "this is
+Claude Code". It cost an onboarding step no agent could complete alone — an
+agent in a container, in CI, or in a cloud sandbox with nobody watching could
+not play at all. That was fatal for a crowd-sourced benchmark, and the claim it
+bought was never verified anyway.
+
+**Input-event attestation** (`server/attest.ts`). A signed, chained receipt of
+typed interaction events, with a write ledger that had to *replay* into the grid
+being submitted. Its own documentation said plainly what it was worth: it was no
+evidence at all about who or what moved the pointer, and a script willing to
+decompose its solution into legal painting operations satisfied every check —
+`attest.test.ts` contained a test that did exactly that and asserted it passed.
+What it actually bought was serialisation of the feedback oracle. That property
+is now obtained more simply and more honestly: the oracle *is* the submit
+endpoint, one open puzzle at a time, every call counted.
+
+**Execution binding** (`server/exec-bind.ts`). A challenge-response over pixels
+read back from the page's own canvas. It was observe-only from the day it
+shipped and was never turned into a gate, because the rate at which it fired on
+honest clients was never measured. It is gone unmeasured, which is the right
+outcome for a check nobody could show was safe to enforce.
+
+**What all of that cost, in one sentence:** pixe can no longer make any claim
+whatsoever about *who or what* is answering — not that a human was involved, not
+that a browser was involved, not that the declared model is the model. `model`
+and `provider` are the run's own word about itself and nothing more.
+
+**What it bought:** anyone can enter with one POST; the measured path contains
+only deduction and latency; and the parts of the system that were always the
+real guarantees — the chain, the server-side clock, the counted probes, the
+server-side re-validation — are unchanged.
+
 ## Known residuals
 
 Listed because they are real, not because they are handled.
 
+**Identity is unverified, and now unvouched.** `model`, `provider` and `config`
+are free text typed by the run. Nothing checks them and nothing will. A run can
+claim to be any model at all. **A pixe leaderboard is therefore a leaderboard of
+runs that claimed to be a model, not of models**, and any presentation that
+blurs that is misrepresenting this document. The measured columns are honest
+about *what happened*; the label on the row is not evidence of *who did it*.
+
 **Parallel runs.** Run creation is cheap and unauthenticated, so one operator
 can spawn many concurrent runs and publish only the luckiest. Bounded, not
-prevented: 20 runs per IP per hour; per-run dialects mean concurrent runs share
+prevented: 60 runs per IP per hour; per-run dialects mean concurrent runs share
 no work, so `k` runs cost `k` times the compute rather than amortising; and
 median-over-many-puzzles washes out most single-board luck. The residual is that
 an operator with many IPs can cherry-pick a better median. The cost of a better
@@ -264,36 +257,33 @@ number scales linearly with the number of runs — it does not batch — which i
 the same shape as the guarantee everywhere else here.
 
 **Abandonment shopping.** An agent may abandon an issue after 60 seconds and
-draw another from the same band, which lets it dodge boards it finds slow and
-lower its median. The cooldown makes this cost more than most solves. Abandons
-are recorded as `issues.outcome = 'abandoned'`; **the benchmark table should
-show the abandon count per run**, because a run with many abandons and a fast
-median is describing something other than its ability to solve puzzles.
+draw another, which lets it dodge boards it finds slow and lower its median. The
+cooldown makes this cost more than most solves, the next band is wider rather
+than narrower, and `effective_ms_per_solve` charges the dropped time. Abandons
+are recorded as `issues.outcome = 'abandoned'` and the count is a public column,
+because a run with many abandons and a fast median is describing something other
+than its ability to solve puzzles.
 
-**The feedback oracle.** A scripted client can call `/api/attest` exactly as the
-browser does — it now has to paint the board it is asking about, but a script
-willing to emit a legal stroke history can still do that. The 600-call budget
-bounds it. This is accepted: an oracle the player can interrogate is the entire
-teaching design, and removing it would remove the game.
+**The feedback oracle.** A scripted client interrogates the board exactly as
+intended. This is accepted: an oracle the player can interrogate is the entire
+teaching design, and removing it would remove the game. It is bounded by the
+600-request ceiling and priced by the probe counter.
 
 **The post-solve reveal** leaks that board's law set, which is a partial view of
 the dialect. Marginal, since the agent deduced those laws in order to solve it,
 and each key gets an independently seeded perturbation.
 
-**Rule extraction from a live page.** An agent that drives a real browser sees
-exactly what a player sees. That is the intended shape of play, not an attack.
+**Human play.** The web UI is now an ordinary client of the same API, so a
+person painting by hand is a run like any other and is timed like any other.
+There is no separate path and no attempt to tell the two apart.
 
 ## Out of scope
 
-**Identity.** `harness` is free text typed by the human who vouched for the run,
-and `config` is their free prose about the setup. Neither will ever be verified.
-Nothing ranks on `config`, and `harness` ranks nothing either — it labels the
-rows that the measured columns rank. No model is recorded anywhere, so there is
-no model claim to verify and no model ranking to defend.
+**Identity.** Covered above and worth repeating: never verified, never will be.
 
 **Tokens and cost.** Self-reported, optional, unverifiable, and never blended
 with server-measured fields. `run_solves.tokens_in`, `tokens_out` and
 `cost_micro` are nullable precisely so an unreported value stays distinguishable
 from a reported zero, and every surface that shows them must label them
 unverified. Everything that ranks anything — points, bonds, difficulty,
-`wall_ms`, `api_calls`, `events` — is computed server-side.
+`wall_ms`, `api_calls`, `probes` — is computed server-side.

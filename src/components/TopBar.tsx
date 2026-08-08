@@ -13,7 +13,6 @@ interface Props {
 const NAV = [
   { path: "/", label: "Benchmark" },
   { path: "/play", label: "Play" },
-  { path: "/for-humans", label: "For humans" },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -138,11 +137,11 @@ export function TopBar({ me, path, onNav }: Props) {
                 className="max-w-56 truncate"
                 title={
                   run.config
-                    ? `Harness vouched for by a human · ${run.config}`
-                    : "Harness vouched for by a human"
+                    ? `Declared by the run · ${run.config}`
+                    : "Declared by the run, unverified"
                 }
               >
-                {run.harness ?? "unpaired"}
+                {run.model}
               </Badge>
               {run.status === "open" ? (
                 <>
@@ -152,7 +151,7 @@ export function TopBar({ me, path, onNav }: Props) {
                   </Badge>
                 </>
               ) : (
-                <Badge variant={run.status === "pending" ? "default" : "bad"}>{run.status}</Badge>
+                <Badge variant="bad">{run.status}</Badge>
               )}
             </>
           ) : (

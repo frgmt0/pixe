@@ -1,6 +1,6 @@
 # The benchmark page
 
-> Time, request counts and solve validity are measured here; names and token counts are
+> Time, request counts and solve validity are measured here; identity and token counts are
 > whatever the run says they are.
 
 That sentence is the whole design. Everything below is how it is enforced.
@@ -11,11 +11,11 @@ That sentence is the whole design. Everything below is how it is enforced.
 | --- | --- | --- |
 | issue durations, abandoned and solved | server, `issues` table | **the ranking** |
 | `wall_ms` | server, issue → accepted | per-solved-board speed, the learning curve |
-| `api_calls`, `events` | server | integrity, not shown on the table yet |
-| `probes` | server, per issue | **the second ranking** — probes / solve |
+| `api_calls` | server | integrity, not shown on the table yet |
+| `probes` | server, per issue — submits that came back unaccepted | **the second ranking** — probes / solve |
 | `points`, `bonds`, `difficulty` | server, re-derived from the seed | context |
-| `harness` | the human who vouched, free text | the benchmarked identity |
-| `config` | the human who vouched, free prose | shown under the harness, ranked by nothing |
+| `model`, `provider` | the run, free text, unverified | what a leaderboard groups on |
+| `config` | the run, free prose | shown under the model, ranked by nothing |
 | `tokens_in`, `tokens_out`, `cost_micro` | the run, nullable | optional secondary columns |
 
 Wall clock is the spine because it is the one number the run cannot move except by
@@ -43,7 +43,7 @@ Every abandoned second lands in the numerator and the abandoned board adds nothi
 denominator, so shopping costs precisely what it should. Three details:
 
 - **Issue durations are summed, not `last_at − first_at`.** The gap between one issue
-  closing and the next opening is an agent that stopped for lunch or a harness that fell
+  closing and the next opening is an agent that stopped for lunch or a runner that fell
   over overnight; charging that as thinking time would be its own kind of dishonest.
 - **Open issues contribute nothing.** They are unfinished work, not time spent.
 - **Each closed issue is capped at `ISSUE_TTL_MS`**, the window the reaper allows a board
@@ -64,13 +64,14 @@ a run with the better median and a pile of dropped boards ranks *behind* one tha
 every board it was dealt.
 
 There is deliberately **no verification UI**: no `verified` boolean, no badge, no
-checkmark, no "unverified" warning styling. We do not check that a run really is the
-harness it claims, and we are not going to, so a badge either way would be asserting
-something nobody looked at. There is no model column at all — a harness with subagents may
-be driving several models, so one string is ill-defined, and pixe cannot produce a model
-ranking. What the page does instead is group the columns under three headers — *vouched by
-a human*, *measured by pixe* and *declared by the run* — and say once, under the table,
-where each part comes from. One statement, not a caveat glued to every cell.
+checkmark, no "unverified" warning styling. We do not check that a run really is the model
+it claims, and we are not going to, so a badge either way would be asserting something
+nobody looked at. `model` and `provider` are what a leaderboard groups rows by — which
+makes a pixe table a table of *runs that claimed to be a model*, and any presentation that
+blurs that is overstating it (`docs/THREAT-MODEL.md` says so at length). What the page does
+instead is group the columns under two headers — *declared by the run* and *measured by
+pixe* — and say once, under the table, where each part comes from. One statement, not a
+caveat glued to every cell.
 
 An unreported token count renders as a small `·`, never as `0`. A zero would sort as
 "free", and a run that declined to report has not scored badly — it has said nothing.
@@ -193,9 +194,8 @@ so the table's whole argument is visible in the seed data.
 Abandoned boards consume a chain index, so a shopper's learning curve has gaps in its
 x-axis. That is deliberate and correct — the gaps are the boards it walked away from.
 
-Every harness is named `FAKE-…` and every config names a `demo-model-…` on purpose. A
-seeded database that looks plausible is exactly the thing that ends up screenshotted as a
-result.
+Every model is named `FAKE-…` and every provider `fake-…` on purpose. A seeded database
+that looks plausible is exactly the thing that ends up screenshotted as a result.
 
 Two recipes exist to make the probes column readable rather than decorative: `FAKE-dunlin`
 is last on the clock by a wide margin and mid-table on probes (a rate-limited endpoint),
@@ -209,11 +209,10 @@ exists so the page could be verified end to end before the routes were wired int
 
 ## Known gaps
 
-- `bonds` is always `0` in `BenchRow`. `ChartPoint` does not project `run_solves.bonds`
-  yet; `server/bench.ts` reads it optionally and will start reporting real numbers the
-  moment the column is added to `SQL.allSolvesForCharts`.
-- Nothing on the page uses `api_calls` or `events` yet. Both are measured and both are
-  more interesting than tokens; they are the obvious next columns.
+- Nothing on the page uses `api_calls` yet. It is measured and more interesting than
+  tokens; it is the obvious next column.
+- Rows aggregate per *run*. A per-model leaderboard — grouping on `model` + `provider`
+  across runs — is a deliberate next step and is not built here.
 - Ranking has no minimum sample size, so a run with a handful of easy boards can still
   rank high. The `solved` and `abandoned` columns are what say so.
 - `effective_ms_per_solve`, `abandoned` and `abandon_rate` are declared as an extension of

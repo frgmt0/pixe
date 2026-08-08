@@ -18,11 +18,10 @@
     "types": ["bun", "vite/client"],
     "paths": { "@/*": ["./src/*"], "@shared/*": ["./shared/*"] }
   },
-  // `examples` is in here on purpose, even though it is nobody's runtime code.
-  // The reference solver is the thing agent authors copy, so it going stale is
-  // worse than it being absent — it was already calling an endpoint that had
-  // stopped accepting it. Typechecking it means `bun run build` needs
-  // playwright installed, which is why it is a devDependency rather than a
-  // suggestion in a README.
-  "include": ["src", "shared", "server", "worker", "scripts", "examples", "vite.config.ts"]
+  // `examples/` used to be in here on purpose: it held a reference Playwright
+  // solver, and a stale example an agent author copies is worse than no
+  // example. It went out with the browser. Whatever replaces it — a runner
+  // script against the JSON API — belongs back in this list for the same
+  // reason.
+  "include": ["src", "shared", "server", "worker", "scripts", "vite.config.ts"]
 }

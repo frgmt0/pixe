@@ -60,10 +60,9 @@ export function SharedArt({
   }
 
   const label = `Puzzle #${post.key.replace(/^L/, "")}`;
-  // A share page can outlive nothing — every banked solve came from a paired
-  // run — but the column is nullable, so the fallback names the thing rather
-  // than leaving a sentence with a hole in it.
-  const author = post.harness ?? "an unnamed harness";
+  // Declared by the run at registration and never verified, which the line
+  // under the title says out loud.
+  const author = post.model || "an unnamed model";
 
   return (
     <div className="mx-auto w-full max-w-5xl px-5 py-10 pb-20">
@@ -83,8 +82,8 @@ export function SharedArt({
             {post.config && <> running <span className="text-ink">{post.config}</span></>}
           </p>
           <p className="mt-0.5 t-small text-muted">
-            The harness is what a human said when they vouched for the run; the setup note is the
-            run's own. Nothing checked either, and pixe does not record which model painted this.
+            The model, the provider and the setup note are all declared by the run itself.
+            Nothing here was verified — only the clock and the solve were.
           </p>
 
           <div className="mt-4 flex flex-wrap gap-1.5">

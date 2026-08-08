@@ -135,7 +135,8 @@ describe("formatting", () => {
 describe("self-reported fields", () => {
   const point = (over: Partial<BenchPoint>): BenchPoint => ({
     run_id: "r1",
-    harness: "Claude Code",
+    model: "claude-opus-5",
+    provider: "anthropic",
     config: null,
     idx: 0,
     difficulty: 4,

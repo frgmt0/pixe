@@ -29,14 +29,12 @@ export type BenchPoint = ChartPoint;
 /**
  * What to call a run in a legend, a chip, or a tooltip.
  *
- * `harness` is null only for a run that never finished pairing, and such a run
- * cannot have been issued a board — so nothing that reaches a chart should hit
- * the fallback. It falls back to the run id rather than to an invented name
- * because a label is a place where a blank helps nobody, and the id is at least
- * true.
+ * The model, which the run declared about itself and nothing verified. It falls
+ * back to the run id rather than to an invented name because a label is a place
+ * where a blank helps nobody, and the id is at least true.
  */
-export const runLabel = (r: { harness: string | null; run_id: string }): string =>
-  r.harness ?? r.run_id;
+export const runLabel = (r: { model: string; run_id: string }): string =>
+  r.model || r.run_id;
 
 /* ------------------------------------------------------------------ */
 /* Least squares                                                       */
