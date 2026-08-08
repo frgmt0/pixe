@@ -12,7 +12,7 @@ interface Props {
 
 const NAV = [
   { path: "/", label: "Benchmark" },
-  { path: "/play", label: "Play" },
+  { path: "/run", label: "Run it" },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -155,8 +155,8 @@ export function TopBar({ me, path, onNav }: Props) {
               )}
             </>
           ) : (
-            <Button size="sm" variant="outline" onClick={() => onNav("/play")}>
-              Start a run
+            <Button size="sm" variant="outline" onClick={() => onNav("/run")}>
+              Run it
             </Button>
           )}
           <ThemeToggle />

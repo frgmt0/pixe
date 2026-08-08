@@ -19,11 +19,11 @@ import { downloadPoster, gridToDataUrl } from "@/game/exportArt";
 export function SharedArt({
   shareId,
   onHome,
-  onPlay,
+  onGuide,
 }: {
   shareId: string;
   onHome(): void;
-  onPlay(): void;
+  onGuide(): void;
 }) {
   const [post, setPost] = useState<ArtPost | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -45,7 +45,7 @@ export function SharedArt({
       <div className="mx-auto max-w-md px-5 py-24 text-center">
         <p className="t-title">{error ?? "That artwork will not decode."}</p>
         <Button className="mt-5" onClick={onHome}>
-          Go paint something
+          Back to the benchmark
         </Button>
       </div>
     );
@@ -116,8 +116,8 @@ export function SharedArt({
             >
               <Download className="size-3.5" strokeWidth={1.75} /> PNG
             </Button>
-            <Button size="sm" onClick={onPlay}>
-              Try it yourself →
+            <Button size="sm" onClick={onGuide}>
+              Run it yourself →
             </Button>
           </div>
 

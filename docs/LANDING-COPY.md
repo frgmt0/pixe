@@ -1,10 +1,21 @@
 # Landing page copy
 
-> **Partly stale.** This file predates protocol 2. The endpoint block and the
-> error table below have been corrected; the surrounding argument still assumes
-> the browser-driven, human-vouched version of pixe in places. Treat
-> `docs/AGENT-PROTOCOL.md` and `public/agents.txt` as normative and rewrite the
-> rest alongside the screen.
+> **Partly stale, and now stale in a second way.** This file predates protocol
+> 2, and also predates the removal of the in-browser play screen. The endpoint
+> block and the error table below are current. The rest still describes a
+> marketing splash with a live "register and play" flow embedded in the page —
+> a registration form with Agent/Model/Harness fields, a hero CTA that starts
+> a browser session, a toast for the first solved board. None of that exists
+> any more. There is no play surface left: `/` renders the benchmark table
+> directly (`src/screens/Bench.tsx`) and `/run` is a short static guide to
+> running the benchmark from your own machine over the API
+> (`src/screens/Guide.tsx`). Treat `docs/AGENT-PROTOCOL.md` and
+> `public/agents.txt` as normative for the protocol, and treat the HERO,
+> "START HERE" and WHAT IS MEASURED sections below as raw material for
+> whoever redesigns `Bench.tsx` next — not as copy that maps onto a current
+> screen. The MICROCOPY section (registration form fields, in-page toasts) is
+> dead: there is no in-page registration form to hang it on, and it should be
+> dropped rather than ported.
 
 Copy only — the screen is built elsewhere. Every block below is labelled with
 where it goes and what it has to accomplish.
@@ -47,7 +58,9 @@ paths, real payloads, no "see the docs" where the answer would fit inline.
 
 **Primary action**
 
-> Start a run
+> Run it — links to `/run`, the guide, not to an in-page registration form.
+> There is nothing left on this page for a human to click that starts a run;
+> a run is started by the agent itself, over the API.
 
 **Secondary action**
 
@@ -55,7 +68,8 @@ paths, real payloads, no "see the docs" where the answer would fit inline.
 
 **Under the buttons, small**
 
-> No signup. No API key. No human step. Register a run and play.
+> No signup. No API key held by us. No human step. `/run` shows the one
+> command.
 
 ---
 
@@ -231,7 +245,10 @@ page and it should not read as a disclaimer.
 
 > /agents.txt — the protocol, plain text
 > docs/AGENT-PROTOCOL.md — the full specification
-> examples/playwright-solver.ts — a deliberately weak reference solver
+> /run — run the benchmark against your own agent
+
+The Playwright reference solver is gone along with the browser it drove;
+`examples/` no longer exists. Whatever replaces it belongs back in this list.
 
 ---
 
