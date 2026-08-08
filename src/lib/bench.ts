@@ -1,40 +1,87 @@
 /**
- * The chart-side maths: regression, axis scaling, and the formatters the
- * benchmark screen reads numbers out with.
+ * The chart-side maths and the shared formatters the benchmark screen reads
+ * numbers out with.
  *
- * The summary statistics are deliberately *not* here. Median, p90 and the two
- * projections live in `shared/protocol.ts` and are computed once, server-side —
- * a second implementation on the client is how a table and its charts end up
- * quoting different numbers for the same run. What genuinely has to happen in
- * the browser is the least-squares fit, because the fit is over whichever runs
- * the reader has selected and asking the server for a slope per click would be
- * a round trip per click.
+ * The summary statistics are deliberately *not* here. Progress, pace, the two
+ * meter sums and the projection all live in `shared/protocol.ts` and are
+ * computed once, server-side — a second implementation on the client is how a
+ * table and its charts end up quoting different numbers for the same row.
+ * What genuinely has to happen in the browser is the least-squares fit for the
+ * learning curve, because the fit is over whichever row's chain the reader has
+ * expanded and asking the server for a slope per click would be a round trip
+ * per click.
+ *
+ * `/api/bench` now returns one row per `(model, provider)` — `BenchGroupRow`
+ * in `shared/protocol.ts` — not one row per run. `BenchRow` below is that
+ * grouped shape, not the per-run row it used to re-export; the per-run shape
+ * survives as `BenchMember`, which is what a group's `members` array (fetched
+ * with `?members=1`) and `/api/bench/points` still carry.
  */
 
 // The point shape is the wire format; nothing about it is redeclared here.
-export { PUZZLE_UNIVERSE } from "@shared/protocol";
-import type { BenchRow as WireBenchRow, ChartPoint } from "@shared/protocol";
+import type {
+  BenchGroupRow as WireBenchGroupRow,
+  BenchRow as WireBenchRow,
+  ChartPoint,
+} from "@shared/protocol";
 
-/**
- * The wire row, unchanged. This was briefly a local extension carrying
- * `effective_ms_per_solve`, `abandoned` and `abandon_rate` while those were
- * still being added server-side; they are declared in `shared/protocol.ts` now,
- * so the extension would only be a second place for the shape to drift.
- */
-export type BenchRow = WireBenchRow;
+/** One run inside a model's group — the shape `?members=1` unfolds and the
+ *  shape `/api/bench` served before the table was model-grouped. */
+export type BenchMember = WireBenchRow;
 
 /** Named for what it is on a chart rather than for the table it also feeds. */
 export type BenchPoint = ChartPoint;
 
+const MS_PER_HOUR = 3_600_000;
+/** The ladder is a fixed, brutally hard 500 boards. Used only as a fallback
+ *  when the server response has not yet said so via `universe`. */
+export const LADDER_SIZE = 500;
+
 /**
- * What to call a run in a legend, a chip, or a tooltip.
+ * The model-grouped row the table renders.
  *
- * The model, which the run declared about itself and nothing verified. It falls
- * back to the run id rather than to an invented name because a label is a place
- * where a blank helps nobody, and the id is at least true.
+ * Extends the wire `BenchGroupRow` with two fields the server may not have
+ * shipped yet during rollout: `projected_500_hours` and `complete`. See
+ * `toBenchRow` below, which is the one place either is filled in when the
+ * wire row does not already carry them.
  */
-export const runLabel = (r: { model: string; run_id: string }): string =>
-  r.model || r.run_id;
+export interface BenchRow extends WireBenchGroupRow {
+  /** Serial wall-clock hours to clear the whole 500-board ladder at this
+   *  row's effective pace — `effective_ms_per_solve × universe / 3.6e6`.
+   *  Read straight off the wire once the server sends it; computed here as a
+   *  fallback so the page still renders correctly against an older response. */
+  projected_500_hours: number;
+  /** Every rung on the ladder banked. Read off the wire when present,
+   *  otherwise inferred from `solves` reaching the ladder size. */
+  complete: boolean;
+  members?: BenchMember[];
+}
+
+/**
+ * Fills in `projected_500_hours` and `complete` when the wire row does not
+ * already carry them. `universe` should be the payload's own `universe`
+ * field — 500, the fixed ladder size — never hardcoded twice.
+ */
+export function toBenchRow(w: WireBenchGroupRow, universe: number): BenchRow {
+  const extra = w as unknown as { projected_500_hours?: number; complete?: boolean };
+  return {
+    ...w,
+    projected_500_hours:
+      typeof extra.projected_500_hours === "number"
+        ? extra.projected_500_hours
+        : (w.effective_ms_per_solve * universe) / MS_PER_HOUR,
+    complete: typeof extra.complete === "boolean" ? extra.complete : universe > 0 && w.solves >= universe,
+  };
+}
+
+/**
+ * What to call a row in a chart legend or tooltip.
+ *
+ * The model, which the run declared about itself and nothing verified. It
+ * falls back to the run id rather than to an invented name because a label is
+ * a place where a blank helps nobody, and the id is at least true.
+ */
+export const runLabel = (r: { model: string; run_id: string }): string => r.model || r.run_id;
 
 /* ------------------------------------------------------------------ */
 /* Least squares                                                       */
@@ -161,27 +208,37 @@ export function padExtent(e: Extent, frac = 0.06): Extent {
 /* Formatting                                                          */
 /* ------------------------------------------------------------------ */
 
-export function fmtSeconds(ms: number): string {
-  const s = ms / 1000;
-  if (s < 10) return `${s.toFixed(1)}s`;
-  if (s < 600) return `${Math.round(s)}s`;
-  return `${(s / 60).toFixed(1)}m`;
+/**
+ * Solve-scale durations — "effective / solve", "median solve" — humanized the
+ * way a reader actually says them: `4.2s`, `45s`, `1m 05s`, `2h 03m`.
+ */
+export function fmtDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "0s";
+  const totalSec = ms / 1000;
+  if (totalSec < 10) return `${totalSec.toFixed(1)}s`;
+  if (totalSec < 60) return `${Math.round(totalSec)}s`;
+  const whole = Math.round(totalSec);
+  const h = Math.floor(whole / 3600);
+  const m = Math.floor((whole % 3600) / 60);
+  const s = whole % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
+  return `${m}m ${String(s).padStart(2, "0")}s`;
 }
 
-/** Compact hours: 1M puzzles at a leisurely pace runs to six figures. */
-export function fmtHours(h: number): string {
-  if (h < 10) return `${h.toFixed(1)} h`;
-  if (h < 1000) return `${Math.round(h).toLocaleString()} h`;
-  if (h < 100_000) return `${(h / 1000).toFixed(1)}k h`;
-  return `${(h / 1000).toFixed(0)}k h`;
-}
-
-/** Hours restated as the unit a reader actually feels. */
-export function fmtDurationLong(h: number): string {
-  if (h < 48) return `${h.toFixed(0)} hours`;
-  const d = h / 24;
-  if (d < 365) return `${d.toFixed(0)} days`;
-  return `${(d / 365).toFixed(1)} years`;
+/**
+ * Ladder-scale durations — the projected full-ladder time — in the unit a
+ * reader actually feels: `34h`, `3d 2h`, `1.2y`.
+ */
+export function fmtDurationLong(hours: number): string {
+  if (!Number.isFinite(hours)) return "—";
+  if (hours < 48) return `${hours < 10 ? hours.toFixed(1) : Math.round(hours)}h`;
+  const days = hours / 24;
+  if (days < 365) {
+    const d = Math.floor(days);
+    const remH = Math.round((days - d) * 24);
+    return remH > 0 ? `${d}d ${remH}h` : `${d}d`;
+  }
+  return `${(days / 365).toFixed(1)}y`;
 }
 
 /** Sign outside the symbol: `−$0.27`, never `$−0.27`. Regression slopes go negative. */
@@ -212,14 +269,33 @@ export function fmtRate(r: number): string {
   return `${Math.round(r * 100)}%`;
 }
 
+/** Tokens per second: one decimal below 10, whole above — a TPS of "6.4" and
+ *  one of "640" both read at a glance. */
+export function fmtTps(v: number): string {
+  if (v < 10) return v.toFixed(1);
+  return `${Math.round(v)}`;
+}
+
 /* ------------------------------------------------------------------ */
-/* Derived series                                                      */
+/* Derived figures                                                     */
 /* ------------------------------------------------------------------ */
 
-/** Total tokens for a solve, or null when the agent reported neither half. */
+/** Total tokens for one solve, or null when the agent reported neither half. */
 export function solveTokens(p: BenchPoint): number | null {
   if (p.tokens_in == null && p.tokens_out == null) return null;
   return (p.tokens_in ?? 0) + (p.tokens_out ?? 0);
+}
+
+/**
+ * Declared tokens out ÷ measured solve time, over the whole group of solves a
+ * row's `solves`/`effective_ms_per_solve` describe. Approximate — the meter is
+ * cumulative-and-resent per rung, not per output token — and blank whenever
+ * either half is unmeasurable, never zero.
+ */
+export function tpsOf(r: Pick<BenchRow, "tokensOut" | "solves" | "effective_ms_per_solve">): number | null {
+  if (r.tokensOut == null || r.solves <= 0 || r.effective_ms_per_solve <= 0) return null;
+  const totalSeconds = (r.solves * r.effective_ms_per_solve) / 1000;
+  return totalSeconds > 0 ? r.tokensOut / totalSeconds : null;
 }
 
 export function groupByRun(points: readonly BenchPoint[]): Map<string, BenchPoint[]> {
