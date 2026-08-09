@@ -122,6 +122,7 @@ export default function (pi: ExtensionAPI) {
     if (!crossedUp || compacting) return;
 
     compacting = true;
+    console.error(`  [meter] context ${tokens.toLocaleString()} > ${CONTEXT_CAP_TOKENS.toLocaleString()} cap — compacting`);
     if (ctx.hasUI) ctx.ui.notify(`pixe-meter: context ${tokens.toLocaleString()} > ${CONTEXT_CAP_TOKENS.toLocaleString()} cap, compacting`, "info");
     ctx.compact({
       customInstructions:

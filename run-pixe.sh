@@ -129,6 +129,7 @@ USAGE
 
 die() { printf 'run-pixe: %s\n' "$*" >&2; exit 1; }
 note() { printf '  %s\n' "$*" >&2; }
+event() { printf '  %s  %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 head_line() { printf '\n%s\n' "$*" >&2; }
 
 need_value() { [ $# -ge 2 ] && [ -n "${2:-}" ] || die "$1 needs a value"; }
@@ -506,6 +507,8 @@ summarise() {
   [ "$SUMMARISED" -eq 1 ] && exit "$code"
   SUMMARISED=1
 
+  [ -n "${STATUS_PID:-}" ] && kill "$STATUS_PID" 2>/dev/null || true
+
   local state solved points bonds ended
   state="$(curl -sS --max-time 10 "$API_ORIGIN/api/bench/runs/$RUN_ID" \
     -H "Authorization: Bearer $RUN_TOKEN" 2>/dev/null || true)"
@@ -802,8 +805,47 @@ run_field() {
 
 MAX_RELAUNCHES=8
 
+# ---------------------------------------------------------------------------
+# Status stream
+#
+# pi in --print mode says nothing until it is finished, which makes an
+# hours-long run indistinguishable from a hung one. This poller asks the
+# server — the only honest narrator of a run — every 20 seconds and reports
+# just the events worth a line: a rung banked, a new rung opened. It reads the
+# same GET run-state endpoint the summary uses, never touches the agent, and
+# tells the operator's terminal nothing the leaderboard would not.
+# ---------------------------------------------------------------------------
+
+status_stream() {
+  local prev_solved=-1 prev_open=""
+  local state solved points open_idx
+  while :; do
+    state="$(curl -sS --max-time 10 "$API_ORIGIN/api/bench/runs/$RUN_ID" \
+      -H "Authorization: Bearer $RUN_TOKEN" 2>/dev/null || true)"
+    if [ -n "$state" ]; then
+      solved="$(printf '%s' "$state" | jq -r '.solved // empty' 2>/dev/null || true)"
+      points="$(printf '%s' "$state" | jq -r '.points // empty' 2>/dev/null || true)"
+      open_idx="$(printf '%s' "$state" | jq -r '.open.idx // empty' 2>/dev/null || true)"
+      if [ -n "$solved" ]; then
+        if [ "$prev_solved" -ge 0 ] && [ "$solved" -gt "$prev_solved" ]; then
+          event "banked — $solved solved · ${points:-?} points"
+        fi
+        if [ "$open_idx" != "$prev_open" ]; then
+          [ -n "$open_idx" ] && event "holding rung $open_idx"
+          prev_open="$open_idx"
+        fi
+        prev_solved="$solved"
+      fi
+    fi
+    sleep 20
+  done
+}
+
 head_line "handing off to pi — the solving from here is the model's"
 printf '\n' >&2
+
+status_stream &
+STATUS_PID=$!
 
 cd "$WORKDIR"
 rm -f "$WORKDIR/watchdog.json"

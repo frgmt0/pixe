@@ -131,6 +131,7 @@ export default function (pi: ExtensionAPI) {
     if (everProbed && /\bABANDON\b/.test(text)) {
       done = true;
       writeOutcome("abandoned");
+      console.error("  [stop gate] ABANDON confirmed — the run is final");
       if (ctx.hasUI) ctx.ui.notify("pixe-watchdog: ABANDON confirmed — the run is final", "info");
       return;
     }
@@ -138,6 +139,7 @@ export default function (pi: ExtensionAPI) {
     if (await runComplete()) {
       done = true;
       writeOutcome("complete");
+      console.error("  [stop gate] ladder complete");
       return;
     }
 
@@ -146,6 +148,7 @@ export default function (pi: ExtensionAPI) {
       if (idleProbes >= MAX_IDLE_PROBES) {
         done = true;
         writeOutcome("unresponsive");
+        console.error("  [stop gate] no work after repeated probes — letting the run end");
         if (ctx.hasUI) ctx.ui.notify("pixe-watchdog: no work after repeated probes — letting the run end", "info");
         return;
       }
@@ -155,6 +158,7 @@ export default function (pi: ExtensionAPI) {
 
     everProbed = true;
     workSinceProbe = false;
+    console.error("  [stop gate] model stopped — asking it to confirm");
     pi.sendUserMessage(PROBE, { deliverAs: "followUp" });
   });
 }

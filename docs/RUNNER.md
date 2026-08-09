@@ -32,6 +32,8 @@ ANTHROPIC_API_KEY=sk-ant-... ./run-pixe.sh \
 - [Resuming a crashed run](#resuming-a-crashed-run)
 - [The stop gate](#the-stop-gate)
 - [Keep-awake and auto-relaunch](#keep-awake-and-auto-relaunch)
+- [Live status](#live-status)
+- [Running a fleet](#running-a-fleet)
 - [Verified and unverified runs](#verified-and-unverified-runs)
 - [What the runner deliberately does not do](#what-the-runner-deliberately-does-not-do)
 - [Metering](#metering)
@@ -450,6 +452,53 @@ open is still open, still on the clock.
 
 Ctrl-C is still Ctrl-C. It ends the loop, prints the summary and the resume
 line, and walks away.
+
+---
+
+## Live status
+
+pi in headless mode says nothing until it is finished, which makes an
+hours-long run indistinguishable from a hung one. The runner narrates the
+important bits to your terminal as they happen:
+
+```
+  01:12:44  holding rung 4
+  01:31:02  banked — 4 solved · 18 points
+  01:31:22  holding rung 5
+  [meter] context 251,004 > 250,000 cap — compacting
+  [stop gate] model stopped — asking it to confirm
+```
+
+The timestamped lines come from a 20-second poll of the same GET run-state
+endpoint the exit summary uses — the server is the only honest narrator of a
+run, and the poll never touches the agent. The bracketed lines come from the
+two extensions, at the moments they act. None of it reaches the model.
+
+---
+
+## Running a fleet
+
+`run-pixe-fleet.sh` launches several models at once, each as its own fully
+independent run:
+
+```bash
+./run-pixe-fleet.sh --verified -- \
+    anthropic:claude-fable-5 anthropic:claude-opus-5 anthropic:claude-sonnet-5
+```
+
+Everything before `--` is handed to every run unchanged (`--thinking`,
+`--verified`, `--api`, `--config`); everything after it is a `provider:model`
+spec. Each spec gets its own registration, scratch workdir and leaderboard
+row, and the interleaved output is prefixed `[model]` (coloured on a
+terminal, plain in a log). If the same model runs on two providers, the
+prefixes carry the provider too.
+
+The fleet script adds no benchmark semantics — a fleet run and a solo run are
+indistinguishable to the server, deliberately, or running in a fleet would be
+a config worth declaring. Ctrl-C stops everything, and each run prints its
+own summary and resume line on the way down: a killed fleet is N resumable
+runs, not one lost one. Per-run flags (`--resume`, `--workdir`) are rejected
+as shared flags; resume a single crashed member with `run-pixe.sh` itself.
 
 ---
 
