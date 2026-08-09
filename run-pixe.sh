@@ -18,6 +18,12 @@
 #
 set -euo pipefail
 
+# Resolved absolute, and it must be: the extension paths built from this are
+# handed to pi after a cd into the scratch workdir, so a relative $0 (running
+# as ./run-pixe.sh) would make pi look for extensions/ inside /tmp/pixe-run.*
+# and refuse to start. Cost a real resume attempt to learn.
+readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 readonly PIXE_DEFAULT_API="https://pixe.frgmt.xyz"
 readonly PI_INSTALL_ONELINER="curl -fsSL https://pi.dev/install.sh | sh"
 readonly VERIFIED_KEY_PATH="${HOME}/.config/pixe/verified.key"
@@ -768,8 +774,8 @@ if [ -n "$RESUME" ]; then RESUME_NOTE="$(resume_note)"; else RESUME_NOTE=""; fi
 # outcome lands in $PIXE_WORKDIR/watchdog.json so the relaunch loop below can
 # tell a deliberate ending from a dead process.
 # ---------------------------------------------------------------------------
-PI_EXTRA_ARGS=(-e "$(dirname "$0")/extensions/pixe-meter.ts"
-               -e "$(dirname "$0")/extensions/pixe-watchdog.ts")
+PI_EXTRA_ARGS=(-e "$SCRIPT_DIR/extensions/pixe-meter.ts"
+               -e "$SCRIPT_DIR/extensions/pixe-watchdog.ts")
 METER_NOTE="
 
 METERING
