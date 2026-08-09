@@ -388,6 +388,43 @@ setup_endpoint_override() {
 [ -n "$BASE_URL" ] && setup_endpoint_override
 
 # ---------------------------------------------------------------------------
+# Context cap
+#
+# The benchmark caps live context at 250K tokens regardless of the model's
+# own window. The enforcement is deliberately NOT an extension calling
+# ctx.compact(): pi's compact() begins by aborting the in-flight agent run
+# and never restarts it, which in --print mode ends the process — one death
+# per 250K crossing, observed live. Instead the cap is expressed in pi's own
+# terms: native auto-compaction fires at contextWindow - reserveTokens, so
+# writing reserveTokens = window - 250000 into the workdir's project
+# settings moves the native trigger down to the cap, and pi's own overflow
+# path compacts and retries mid-run without dropping anything.
+#
+# The window comes from pi's model listing (display-rounded; exact for every
+# catalogued anthropic window as of pi 0.84.1). A model pi cannot size, or
+# whose window is already at or under the cap plus the default reserve, is
+# left alone — the default trigger is already at least as strict.
+# ---------------------------------------------------------------------------
+
+context_cap_settings() {
+  local cap=250000 window num reserve
+  window="$(pi --list-models 2>/dev/null | awk -v p="$PROVIDER" -v m="$MODEL" '$1 == p && $2 == m { print $3; exit }')"
+  num="${window%[KM]}"
+  case "$num" in '' | *[!0-9]*) return 0 ;; esac
+  case "$window" in
+    *M) window=$((num * 1000000)) ;;
+    *K) window=$((num * 1000)) ;;
+    *)  window="$num" ;;
+  esac
+  reserve=$((window - cap))
+  [ "$reserve" -le 16384 ] && return 0
+  mkdir -p "$WORKDIR/.pi"
+  jq -n --argjson r "$reserve" '{compaction: {reserveTokens: $r}}' > "$WORKDIR/.pi/settings.json"
+  note "context cap: ${window}-token window, native compaction at ${cap} (reserveTokens=${reserve})"
+}
+context_cap_settings
+
+# ---------------------------------------------------------------------------
 # Declared config
 #
 # Nothing ranks on this and nothing checks it, which is exactly why it should
@@ -737,9 +774,9 @@ METER_NOTE="
 
 METERING
 
-An extension is loaded that tracks token and cost usage and enforces a 250K
-live-context cap by compacting automatically; you do not need to do anything
-about context size yourself.
+An extension is loaded that tracks token and cost usage. Your live context is
+capped at 250K tokens and compacts automatically when it gets there; you do
+not need to do anything about context size yourself.
 
 To report accurately, the pixe server only keeps the \`meter\` value attached
 to whichever submit finally accepts a rung — not a running total across the

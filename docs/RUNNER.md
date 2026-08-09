@@ -557,8 +557,8 @@ directly, or `GET /api/bench/runs/:id` later, which carries the same field.
 ## Metering
 
 `meter: { tokensIn, tokensOut, costMicro }` on submit is optional, declared, and
-unchecked — but the runner now populates it, and enforces a context-size cap,
-through `extensions/pixe-meter.ts`, loaded on every run:
+unchecked — but the runner now populates it through `extensions/pixe-meter.ts`,
+loaded on every run:
 
 ```bash
 PI_EXTRA_ARGS=(-e "$(dirname "$0")/extensions/pixe-meter.ts"
@@ -566,44 +566,44 @@ PI_EXTRA_ARGS=(-e "$(dirname "$0")/extensions/pixe-meter.ts"
 METER_NOTE="…"   # tells the agent how to use it; appended to the solver prompt
 ```
 
-Everything below this point describes what that extension actually does, what
-was verified against a local pi 0.84.1 install, and how to change either the
-context cap or the metering behaviour.
+Everything below this point describes what the extension and the cap actually
+do, what was verified against a local pi 0.84.1 install, and how to change
+either.
 
 ### The 250K context cap
 
-`CONTEXT_CAP_TOKENS = 250_000` is a constant at the top of
-`extensions/pixe-meter.ts`. On every `message_end` event the extension reads
-`ctx.getContextUsage().tokens` and, the first time it crosses from at-or-under
-the cap to over it, calls `ctx.compact()` — the same call `/compact` and pi's
-own auto-compaction use, with `customInstructions` asking it to preserve
-deduced laws and the current puzzle's state verbatim, since losing a deduction
-mid-puzzle costs real probes to re-derive.
+The benchmark caps live context at 250K tokens regardless of the model's own
+window. The enforcement is a settings file, not code: before launching pi,
+`run-pixe.sh` looks up the model's context window and, when it exceeds the cap
+plus pi's default reserve, writes
 
-This is deliberately a *second*, lower trigger next to pi's own. pi already
-auto-compacts at `contextTokens > contextWindow - reserveTokens` (default
-`reserveTokens` 16384) — see [compaction.md](https://github.com/earendil-works/pi-mono)
-or `docs/compaction.md` in the installed package. For any model whose context
-window is at or below roughly 266K, pi's own trigger fires before this
-extension's ever would, which is correct and left alone. The extension's job
-is only the cases pi's own trigger does not cover: models with windows large
-enough that 250K of live context is well inside pi's own budget. Edit
-`CONTEXT_CAP_TOKENS` in the extension file to change the cap; there is no flag
-for it, on purpose — it is a policy constant, not a per-run knob.
+```json
+{ "compaction": { "reserveTokens": <window - 250000> } }
+```
 
-**Verified against a local pi 0.84.1 install:** `ctx.getContextUsage()` returns
-exactly `{ tokens, contextWindow, percent }` as typed
-(`dist/core/extensions/types.d.ts`), and `ctx.compact({ customInstructions,
-onComplete, onError })` is callable and resolves through those callbacks — a
-probe extension calling it from `agent_end` against a live OpenRouter free
-model logged `PROBE compact onError: Nothing to compact (session too small)`,
-which is the correct, graceful outcome for a two-message session and confirms
-the call reaches pi's real compaction path rather than throwing or hanging.
-Reaching an *actual* 250K-token session to watch the cap fire for real was not
-attempted — that would cost real tokens for no additional confidence, since
-the trigger logic (`ctx.getContextUsage()` + edge-triggered `ctx.compact()`)
-is the exact pattern pi ships as its own `examples/extensions/trigger-compact.ts`
-reference example, just at a different threshold.
+into `<workdir>/.pi/settings.json`. pi's own auto-compaction fires at
+`contextTokens > contextWindow - reserveTokens` (see `docs/compaction.md` in
+the installed package), so raising the reserve moves pi's *native* trigger
+down to exactly the cap — and the native overflow path compacts and then
+**retries the interrupted request**, mid-run, losing nothing. Models whose
+window is already at or below roughly 266K are left alone; pi's default
+trigger is at least as strict there.
+
+**Why not an extension calling `ctx.compact()`?** That was the first
+implementation, and it is a trap that cost a real run: pi's `compact()`
+begins with an unconditional abort of the in-flight agent run
+(`agent-session` `compact()` → `await this.abort()`) and never restarts it.
+In interactive use that just ends the current turn; in `--print` mode the
+aborted run is the whole process, so every 250K crossing printed
+`This operation was aborted` and exited 1 — observed live on 2026-08-09
+against two models at once. pi's own `examples/extensions/trigger-compact.ts`
+ships the same pattern and has the same headless failure mode. The relaunch
+loop recovered those runs, but a cold relaunch is strictly worse than a real
+compaction, so the extension no longer compacts at all — the comment block at
+the top of `pixe-meter.ts` exists to keep it that way.
+
+The cap value lives in `context_cap_settings()` in `run-pixe.sh`; there is no
+flag for it, on purpose — it is a policy constant, not a per-run knob.
 
 ### Metering: how the numbers get from pi to the server
 
@@ -719,14 +719,14 @@ interface Usage {
 `round(cost.total * 1e6)`. `extensions/pixe-meter.ts` is what actually reads
 this now, via the `message_end` and `session_compact` events — see above.
 
-One thing worth knowing if the cap ever needs retuning for `--base-url`
-providers: the runner's endpoint-override path (see
+One thing worth knowing about the cap and `--base-url` providers: for an
+uncatalogued provider the runner's endpoint-override path (see
 [Custom endpoints](#custom-endpoints---base-url)) generates a `models.json`
-with a `contextWindow` for the model, and that is what pi measures its own
-`contextTokens > contextWindow - reserveTokens` trigger against. The 250K cap
-in the extension is independent of that number by design — it does not need
-to agree with it, since it is meant to bind regardless of what a model's own
-window would otherwise allow.
+declaring `contextWindow: 128000`, which sits under the cap, so pi's default
+trigger already binds first and `context_cap_settings()` correctly leaves the
+reserve alone. If you raise that declared window past ~266K for your own
+endpoint, the cap applies through the same lookup as everything else — the
+window is read from `pi --list-models`, which reflects the merged catalog.
 
 ---
 
