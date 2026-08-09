@@ -853,11 +853,20 @@ rm -f "$WORKDIR/watchdog.json"
 PROMPT="$(solver_prompt)$RESUME_NOTE$METER_NOTE"
 RELAUNCHES=0
 while :; do
+  LAUNCHED_AT="$(date +%s)"
   set +e
   ${INHIBIT[@]+"${INHIBIT[@]}"} pi "${PI_ARGS[@]}" \
     ${PI_EXTRA_ARGS[@]+"${PI_EXTRA_ARGS[@]}"} "$PROMPT"
   PI_EXIT=$?
   set -e
+
+  # A session that ran a while before dying is not the same failure repeating —
+  # a run that banks puzzles for an hour and then hits a rate-limit storm
+  # deserves the full relaunch budget again, not the tail end of one spent on
+  # startup crashes six hours ago.
+  if [ "$(( $(date +%s) - LAUNCHED_AT ))" -ge 600 ]; then
+    RELAUNCHES=0
+  fi
 
   WATCHDOG_OUTCOME=""
   [ -f "$WORKDIR/watchdog.json" ] && \
@@ -874,7 +883,15 @@ while :; do
     note "relaunch: pi keeps dying; giving up after $MAX_RELAUNCHES relaunches. Resume line below."
     break
   fi
-  note "pi exited (code $PI_EXIT) with the run unfinished — relaunching ($RELAUNCHES/$MAX_RELAUNCHES) in 10s"
-  sleep 10
+
+  # Exponential backoff, 15s doubling to a 10-minute ceiling. The common
+  # killer here is a rate-limit window — pi's own in-session retries (3, over
+  # ~14s) have already failed by the time we get here, so relaunching hot
+  # would just spend the budget probing the same wall. Eight attempts on this
+  # curve rides out ~40 minutes of continuous refusal.
+  BACKOFF=$((15 * (1 << (RELAUNCHES - 1))))
+  [ "$BACKOFF" -gt 600 ] && BACKOFF=600
+  note "pi exited (code $PI_EXIT) with the run unfinished — relaunching ($RELAUNCHES/$MAX_RELAUNCHES) in ${BACKOFF}s"
+  sleep "$BACKOFF"
   PROMPT="$(solver_prompt)$(resume_note)$METER_NOTE"
 done
