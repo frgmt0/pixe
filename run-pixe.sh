@@ -506,12 +506,24 @@ summarise() {
   [ "$SUMMARISED" -eq 1 ] && exit "$code"
   SUMMARISED=1
 
-  local state solved points bonds
+  local state solved points bonds ended
   state="$(curl -sS --max-time 10 "$API_ORIGIN/api/bench/runs/$RUN_ID" \
     -H "Authorization: Bearer $RUN_TOKEN" 2>/dev/null || true)"
   solved="$(printf '%s' "$state" | jq -r '.solved // "?"' 2>/dev/null || echo '?')"
   points="$(printf '%s' "$state" | jq -r '.points // "?"' 2>/dev/null || echo '?')"
   bonds="$(printf '%s' "$state" | jq -r '.bonds // "?"' 2>/dev/null || echo '?')"
+
+  # How it ended, if the stop gate recorded one. "abandoned" here means the
+  # model was asked "are you sure?" and answered ABANDON — a deliberate,
+  # final ending, as opposed to the process merely dying.
+  ended=""
+  if [ -n "$WORKDIR" ] && [ -f "$WORKDIR/watchdog.json" ]; then
+    case "$(jq -r '.outcome // ""' "$WORKDIR/watchdog.json" 2>/dev/null || echo "")" in
+      abandoned)    ended="abandoned — model confirmed ABANDON; score is final" ;;
+      complete)     ended="ladder complete" ;;
+      unresponsive) ended="model stopped answering the stop gate" ;;
+    esac
+  fi
 
   cat >&2 <<EOF
 
@@ -520,7 +532,8 @@ summarise() {
 
   run          $RUN_ID
   declared     $MODEL on $PROVIDER
-  banked       $solved solved · $points points · $bonds bonds
+  banked       $solved solved · $points points · $bonds bonds${ended:+
+  ended        $ended}
   leaderboard  $API_ORIGIN
   workdir      $WORKDIR
 
@@ -661,24 +674,29 @@ what you worked out about how these boards behave, and where it broke down.
 PROMPT
 }
 
-if [ -n "$RESUME" ]; then
-  RESUME_NOTE="
+# Used both for --resume and for the relaunch loop below: a fresh pi session
+# picking up a live run needs telling that it is mid-flight, whichever way the
+# previous session ended.
+resume_note() {
+  cat <<'NOTE'
+
 
 RESUMING
 
 This run is already in progress and you are picking it up mid-flight. Before
 anything else, after reading the spec, fetch your own state:
 
-    curl -s \"\$PIXE_API/api/bench/runs/\$PIXE_RUN_ID\" -H \"Authorization: Bearer \$PIXE_RUN_TOKEN\"
+    curl -s "$PIXE_API/api/bench/runs/$PIXE_RUN_ID" -H "Authorization: Bearer $PIXE_RUN_TOKEN"
 
 It tells you what you have banked and whether a board is still open. If one is,
 you are holding it — its contents are not re-servable, so you are working from
 nothing but its rung and key. Judge whether to attack it fresh or abandon it and
 take a new one, and remember abandoning is charged. If nothing is open, call
-/next and begin."
-else
-  RESUME_NOTE=""
-fi
+/next and begin.
+NOTE
+}
+
+if [ -n "$RESUME" ]; then RESUME_NOTE="$(resume_note)"; else RESUME_NOTE=""; fi
 
 # ---------------------------------------------------------------------------
 # METERING
@@ -697,7 +715,21 @@ fi
 # of asking it to subtract two numbers by hand. See docs/RUNNER.md § "Metering"
 # for the full design and what was verified against a local pi install.
 # ---------------------------------------------------------------------------
-PI_EXTRA_ARGS=(-e "$(dirname "$0")/extensions/pixe-meter.ts")
+# ---------------------------------------------------------------------------
+# STOP GATE
+#
+# extensions/pixe-watchdog.ts sits on pi's agent_settled event — the moment
+# the model has stopped and pi would otherwise let the session end — and asks
+# one neutral question: "Are you sure you want to stop? Reply with exactly the
+# single word ABANDON to confirm." It deliberately reveals nothing about
+# remaining puzzles or ladder depth: a model told "you have more to do" is
+# being steered, and a steered run measures the steering. ABANDON ends the run
+# and the score is final; anything else is the model choosing to continue. The
+# outcome lands in $PIXE_WORKDIR/watchdog.json so the relaunch loop below can
+# tell a deliberate ending from a dead process.
+# ---------------------------------------------------------------------------
+PI_EXTRA_ARGS=(-e "$(dirname "$0")/extensions/pixe-meter.ts"
+               -e "$(dirname "$0")/extensions/pixe-watchdog.ts")
 METER_NOTE="
 
 METERING
@@ -728,6 +760,22 @@ by nothing — best effort beats nothing, but do not let it slow down solving."
 # agent's head; combined with the scratch workdir it means the model arrives
 # knowing only what the prompt and /agents.txt told it, which is the condition
 # the benchmark is supposed to measure under.
+#
+# The pi process is wrapped in systemd-inhibit where available, holding both
+# the idle and sleep inhibitor locks for exactly as long as pi runs. A
+# benchmark run is hours of a machine looking idle to everything that watches
+# for idleness — hypridle honours these locks (ignore_systemd_inhibit defaults
+# to off) and logind will not suspend past them, so neither a screensaver
+# cascade nor a sleep can take the run down mid-board.
+#
+# And because a process can still simply die — a dropped stream aborts pi, a
+# power cut kills the box — the launch is a loop, not a call. After every pi
+# exit the loop asks two questions: did the watchdog record a deliberate
+# ending (ABANDON confirmed, ladder complete, model unresponsive), and does
+# the server say the ladder is done? If neither, the exit was an accident and
+# pi is relaunched into the same run with the resume briefing, up to
+# MAX_RELAUNCHES times. Ctrl-C still ends everything: the INT trap fires in
+# this shell and never returns to the loop.
 # ---------------------------------------------------------------------------
 
 PI_ARGS=(--print --provider "$PROVIDER" --model "$MODEL" --no-context-files
@@ -739,9 +787,52 @@ export PIXE_RUN_ID="$RUN_ID"
 export PIXE_RUN_TOKEN="$RUN_TOKEN"
 export PIXE_WORKDIR="$WORKDIR"
 
+INHIBIT=()
+if command -v systemd-inhibit >/dev/null 2>&1; then
+  INHIBIT=(systemd-inhibit --what=idle:sleep --who=run-pixe
+           --why="pixe benchmark run $RUN_ID" --mode=block)
+  note "keep-awake: systemd-inhibit holds idle and sleep while pi runs"
+fi
+
+run_field() {
+  curl -sS --max-time 10 "$API_ORIGIN/api/bench/runs/$RUN_ID" \
+    -H "Authorization: Bearer $RUN_TOKEN" 2>/dev/null \
+    | jq -r "(.$1 // \"\") | tostring" 2>/dev/null || echo ""
+}
+
+MAX_RELAUNCHES=8
+
 head_line "handing off to pi — the solving from here is the model's"
 printf '\n' >&2
 
 cd "$WORKDIR"
-pi "${PI_ARGS[@]}" ${PI_EXTRA_ARGS[@]+"${PI_EXTRA_ARGS[@]}"} \
-   "$(solver_prompt)$RESUME_NOTE$METER_NOTE"
+rm -f "$WORKDIR/watchdog.json"
+
+PROMPT="$(solver_prompt)$RESUME_NOTE$METER_NOTE"
+RELAUNCHES=0
+while :; do
+  set +e
+  ${INHIBIT[@]+"${INHIBIT[@]}"} pi "${PI_ARGS[@]}" \
+    ${PI_EXTRA_ARGS[@]+"${PI_EXTRA_ARGS[@]}"} "$PROMPT"
+  PI_EXIT=$?
+  set -e
+
+  WATCHDOG_OUTCOME=""
+  [ -f "$WORKDIR/watchdog.json" ] && \
+    WATCHDOG_OUTCOME="$(jq -r '.outcome // ""' "$WORKDIR/watchdog.json" 2>/dev/null || echo "")"
+  case "$WATCHDOG_OUTCOME" in
+    abandoned)    note "ended: model confirmed ABANDON — the score is final"; break ;;
+    complete)     note "ended: ladder complete"; break ;;
+    unresponsive) note "ended: model stopped answering the stop gate"; break ;;
+  esac
+  [ "$(run_field complete)" = "true" ] && { note "ended: ladder complete"; break; }
+
+  RELAUNCHES=$((RELAUNCHES + 1))
+  if [ "$RELAUNCHES" -gt "$MAX_RELAUNCHES" ]; then
+    note "relaunch: pi keeps dying; giving up after $MAX_RELAUNCHES relaunches. Resume line below."
+    break
+  fi
+  note "pi exited (code $PI_EXIT) with the run unfinished — relaunching ($RELAUNCHES/$MAX_RELAUNCHES) in 10s"
+  sleep 10
+  PROMPT="$(solver_prompt)$(resume_note)$METER_NOTE"
+done

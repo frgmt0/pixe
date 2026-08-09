@@ -30,6 +30,8 @@ ANTHROPIC_API_KEY=sk-ant-... ./run-pixe.sh \
 - [Every flag](#every-flag)
 - [What the agent is told](#what-the-agent-is-told)
 - [Resuming a crashed run](#resuming-a-crashed-run)
+- [The stop gate](#the-stop-gate)
+- [Keep-awake and auto-relaunch](#keep-awake-and-auto-relaunch)
 - [Verified and unverified runs](#verified-and-unverified-runs)
 - [What the runner deliberately does not do](#what-the-runner-deliberately-does-not-do)
 - [Metering](#metering)
@@ -390,6 +392,67 @@ runner warns and continues.
 
 ---
 
+## The stop gate
+
+An agent loop ends whenever the model emits a message with no tool calls, and
+models do that by accident — a summary turn, a "let me take stock" beat with
+no action attached. In headless mode that accident would silently end a
+benchmark run with hours left in it.
+
+So `extensions/pixe-watchdog.ts` sits on pi's `agent_end` event, and when the
+model stops while its run is neither complete nor errored, it asks exactly
+one thing:
+
+> Are you sure you want to stop? If so, reply with exactly the single word
+> ABANDON to confirm — the run ends and its score is final. Otherwise, carry
+> on.
+
+The wording is the policy:
+
+- **It reveals nothing.** Not how many puzzles remain, not how deep the ladder
+  goes, not that stopping is "early". A model told "you have more to do" is
+  being steered, and a steered run measures the steering. The only fact the
+  probe adds is that stopping is final — which the solver prompt already said.
+- **ABANDON is final.** If the model answers with the word, the run is over and
+  the score on the board is the score. No second confirmation, no takeback.
+- **Anything else is a choice to continue.** The model keeps the board, the
+  clock keeps running.
+- **Inaction eventually counts as an answer.** A model that is probed and then
+  stops again three times in a row without executing a single tool is not
+  mid-thought; the gate lets the session end and the runner treats it as
+  final rather than relaunching into the same wall.
+
+The gate never fires on runs that ended in a provider error or an abort —
+that is not the model deciding anything, and it is handled by the relaunch
+loop below instead. The outcome lands in `$PIXE_WORKDIR/watchdog.json`
+(`abandoned`, `complete`, or `unresponsive`) and is printed in the exit
+summary as the `ended` line.
+
+---
+
+## Keep-awake and auto-relaunch
+
+A benchmark run is hours of a machine that looks idle to everything that
+watches for idleness. Where `systemd-inhibit` exists, the runner wraps the pi
+process in it, holding the `idle` and `sleep` locks for exactly as long as pi
+runs — screensavers and idle daemons that honour systemd inhibitors (hypridle
+does, by default) stay quiet, and the box cannot suspend mid-board. No flag,
+no configuration; it simply does not apply on systems without systemd.
+
+And because a process can still simply die — a dropped provider stream aborts
+pi, a power cut kills the box — the launch is a loop, not a call. After every
+pi exit the runner asks two questions: did the stop gate record a deliberate
+ending, and does the server say the ladder is complete? If neither, the exit
+was an accident, and pi is relaunched into the same run with the resume
+briefing (the same one `--resume` uses), up to 8 times. Server state is
+authoritative throughout: everything banked stays banked, and a board that was
+open is still open, still on the clock.
+
+Ctrl-C is still Ctrl-C. It ends the loop, prints the summary and the resume
+line, and walks away.
+
+---
+
 ## Verified and unverified runs
 
 **Default is unverified, and unverified is a first-class run.** pixe does not
@@ -449,7 +512,8 @@ unchecked — but the runner now populates it, and enforces a context-size cap,
 through `extensions/pixe-meter.ts`, loaded on every run:
 
 ```bash
-PI_EXTRA_ARGS=(-e "$(dirname "$0")/extensions/pixe-meter.ts")
+PI_EXTRA_ARGS=(-e "$(dirname "$0")/extensions/pixe-meter.ts"
+               -e "$(dirname "$0")/extensions/pixe-watchdog.ts")
 METER_NOTE="…"   # tells the agent how to use it; appended to the solver prompt
 ```
 
