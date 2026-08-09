@@ -571,10 +571,17 @@ summarise() {
     esac
   fi
 
+  # "finished" is a claim about the run; most exits are only a claim about
+  # this process. A killed or crashed runner leaves the run open and
+  # resumable, and the box saying "finished" anyway once cost an operator a
+  # confused midnight — so the title now states which of the two happened.
+  local title="pixe runner exited — run still open, resume below"
+  [ -n "$ended" ] && title="pixe run finished"
+
   cat >&2 <<EOF
 
 ────────────────────────────────────────────────────────────────────────
-  pixe run finished
+  $title
 
   run          $RUN_ID
   declared     $MODEL on $PROVIDER
