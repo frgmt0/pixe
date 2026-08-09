@@ -17,7 +17,7 @@ export function Research() {
     <div className="mx-auto w-full max-w-3xl px-5 pb-24">
       <header className="rule-b pt-2 pb-7">
         <h1 className="t-display">Research</h1>
-        <p className="mt-3 max-w-xl text-muted">
+        <p className="mt-3 text-[14px] leading-relaxed text-muted">
           What is left to measure once a model has read the entire internet? If the test set
           is somewhere in the training data, is a high score comprehension, or memory? pixe is
           a bet on a third option: measure the act of figuring something out, on puzzles whose
@@ -27,7 +27,7 @@ export function Research() {
 
       <section className="mt-9">
         <h2 className="t-title mb-2">The shape of the game</h2>
-        <p className="max-w-xl text-muted">
+        <p className="text-[14px] leading-relaxed text-muted">
           A 64×64 grid, eight colours, 4096 cells. Every board hides its own laws about which
           colours may go where and which may sit next to each other, and the agent is told
           none of them — no rule text, no hint endpoint, no examples. The protocol document
@@ -36,7 +36,7 @@ export function Research() {
           attached, and those complaints are the only teacher there is. The agent paints,
           the board objects, and the laws take shape one refusal at a time.
         </p>
-        <p className="mt-4 max-w-xl text-muted">
+        <p className="mt-4 text-[14px] leading-relaxed text-muted">
           The board only ever complains through two channels, and everything an agent will
           ever learn arrives through one of them.
         </p>
@@ -83,7 +83,7 @@ export function Research() {
           </Figure>
         </div>
 
-        <p className="mt-6 max-w-xl text-muted">
+        <p className="mt-6 text-[14px] leading-relaxed text-muted">
           One more property does a great deal of quiet work: an unfinished counting law stays
           silent while blanks remain, but on a full grid no failing law is invisible.{" "}
           <Q>Once a grid is full, silence means solved</Q> — which means a full, quiet board
@@ -94,7 +94,7 @@ export function Research() {
 
       <section className="rule-t mt-10 pt-7">
         <h2 className="t-title mb-2">What the number means</h2>
-        <p className="max-w-xl text-muted">
+        <p className="text-[14px] leading-relaxed text-muted">
           There are two readings of any leaderboard. The first is that it ranks how much a
           model knows — which is the reading benchmarks like MMLU invite, and the reading
           contamination slowly hollows out. The second is that it ranks how well a model
@@ -103,7 +103,7 @@ export function Research() {
           registration, the first reading is simply unavailable here — there was nothing to
           have known — and I am inclined to trust what is left.
         </p>
-        <p className="mt-4 max-w-xl text-muted">
+        <p className="mt-4 text-[14px] leading-relaxed text-muted">
           So the two ranked columns are exactly those two quantities. <Term>Probes per
           solve</Term> counts rejected submissions — every one an experiment the agent chose
           to run — so a low number is an agent that thinks before it paints, and a high
@@ -118,7 +118,7 @@ export function Research() {
 
       <section className="rule-t mt-10 pt-7">
         <h2 className="t-title mb-2">The kinds of laws</h2>
-        <p className="max-w-xl text-muted">
+        <p className="text-[14px] leading-relaxed text-muted">
           The generator draws from a menu of law families, and by the upper ladder a single
           board carries several at once, interacting. The families group into four broad
           kinds, shown here at miniature scale. (A model could read this page too, of course.
@@ -208,7 +208,7 @@ export function Research() {
           </Figure>
         </div>
 
-        <p className="mt-8 max-w-xl text-muted">
+        <p className="mt-8 text-[14px] leading-relaxed text-muted">
           Deeper in the ladder, rungs stop being one board at all. A multi-phase rung hands
           you a second board the moment the first is accepted, and the second board's laws
           are derived from the grid you just painted — your own accepted solution becomes the
@@ -261,7 +261,7 @@ export function Research() {
 
       <section className="rule-t mt-10 pt-7">
         <h2 className="t-title mb-2">Why 500, and why so hard</h2>
-        <p className="max-w-xl text-muted">
+        <p className="text-[14px] leading-relaxed text-muted">
           The ladder is 500 rungs, tiered so that the early boards teach the loop and the
           late boards are frankly hostile — several interacting laws, multiple phases, rules
           obscure enough that a human working by hand has no realistic path through them
