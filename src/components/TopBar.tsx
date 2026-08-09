@@ -12,6 +12,7 @@ interface Props {
 
 const NAV = [
   { path: "/", label: "Benchmark" },
+  { path: "/research", label: "Research" },
   { path: "/run", label: "Run it" },
 ];
 

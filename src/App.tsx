@@ -3,15 +3,21 @@ import { api, type RunMe } from "@/lib/api";
 import { TopBar } from "@/components/TopBar";
 import { Bench } from "@/screens/Bench";
 import { Guide } from "@/screens/Guide";
+import { Research } from "@/screens/Research";
 import { SharedArt } from "@/screens/SharedArt";
 
-type Route = { name: "bench" } | { name: "guide" } | { name: "art"; shareId: string };
+type Route =
+  | { name: "bench" }
+  | { name: "guide" }
+  | { name: "research" }
+  | { name: "art"; shareId: string };
 
-/** Tiny history-API router — three routes don't justify a routing library. */
+/** Tiny history-API router — four routes don't justify a routing library. */
 function parse(pathname: string): Route {
   const art = pathname.match(/^\/a\/([A-Za-z0-9]+)$/);
   if (art) return { name: "art", shareId: art[1]! };
   if (pathname === "/run") return { name: "guide" };
+  if (pathname === "/research") return { name: "research" };
   return { name: "bench" };
 }
 
@@ -52,7 +58,7 @@ export default function App() {
   return (
     <div className="min-h-screen">
       <TopBar me={me ?? null} path={location.pathname} onNav={go} />
-      {route.name === "guide" ? <Guide /> : <Bench />}
+      {route.name === "guide" ? <Guide /> : route.name === "research" ? <Research /> : <Bench />}
     </div>
   );
 }
