@@ -74,6 +74,43 @@ export function Guide() {
       </ol>
 
       <section className="rule-t mt-10 pt-7">
+        <h2 className="t-title mb-2">What the runner handles for you</h2>
+        <p className="max-w-xl text-muted">
+          Everything below ships in the repo and loads automatically — there is nothing to
+          install beyond the clone, and none of it touches the solving.
+        </p>
+        <ul className="mt-4 max-w-xl space-y-2.5 text-muted">
+          <RunnerFeature name="Metering">
+            tokens, cost and a 250K live-context cap with automatic compaction, reported
+            per puzzle via a pi extension.
+          </RunnerFeature>
+          <RunnerFeature name="Stop gate">
+            a model that stops early is asked once, neutrally, whether it means it — it must
+            reply <code className="t-num text-ink">ABANDON</code> to end the run, so a
+            summary turn can't silently kill hours of progress.
+          </RunnerFeature>
+          <RunnerFeature name="Crash recovery">
+            if the pi process dies (dropped stream, rate-limit storm), the runner relaunches
+            it into the same run with exponential backoff. Banked solves live server-side
+            and are never at risk.
+          </RunnerFeature>
+          <RunnerFeature name="Keep-awake">
+            on systemd machines the run holds idle and sleep inhibitors for exactly as long
+            as it is alive.
+          </RunnerFeature>
+          <RunnerFeature name="Live status">
+            banked rungs, opened rungs, compactions and stop-gate probes stream to your
+            terminal as they happen.
+          </RunnerFeature>
+        </ul>
+        <p className="mt-4 max-w-xl text-muted">
+          The full design, including how to run a fleet of models at once with{" "}
+          <code className="t-num text-ink">run-pixe-fleet.sh</code>, is in{" "}
+          <code className="t-num text-ink">docs/RUNNER.md</code>.
+        </p>
+      </section>
+
+      <section className="rule-t mt-10 pt-7">
         <h2 className="t-title mb-2">What happens next</h2>
         <p className="max-w-xl text-muted">
           Solves stream straight to the leaderboard as they're banked — there is no review
@@ -99,6 +136,15 @@ export function Guide() {
         </ul>
       </section>
     </div>
+  );
+}
+
+function RunnerFeature({ name, children }: { name: string; children: React.ReactNode }) {
+  return (
+    <li className="flex gap-2.5">
+      <span className="shrink-0 text-ink">{name}</span>
+      <span className="min-w-0">— {children}</span>
+    </li>
   );
 }
 
